@@ -52,6 +52,53 @@ Observability:
 
 ---
 
+## Nginx Routing Configuration
+
+**IMPORTANT**: The nginx reverse proxy routes different paths to different destinations:
+
+### Static Files (Admin UI)
+- `/ ` → serves `/login.html` (root redirects to login)
+- `/admin/*` → serves static files from `/usr/share/nginx/html/admin/`
+- Examples:
+  - `/admin/dashboard.html` → static file
+  - `/admin/dashboard.js` → static file
+
+### API Endpoints (Proxied to FastAPI Backend)
+
+**OAuth Endpoints** (no `/api/` prefix):
+- `/admin/oauth/login` → proxied to FastAPI `/admin/oauth/login`
+- `/admin/oauth/callback` → proxied to FastAPI `/admin/oauth/callback`
+- `/admin/oauth/user` → proxied to FastAPI `/admin/oauth/user`
+
+**Admin API Endpoints** (requires `/api/` prefix):
+- `/admin/api/*` → proxied to FastAPI `/admin/*`
+- Examples:
+  - `/admin/api/analytics/overview` → FastAPI `/admin/analytics/overview`
+  - `/admin/api/users` → FastAPI `/admin/users`
+  - `/admin/api/api-keys` → FastAPI `/admin/api-keys`
+  - `/admin/api/config/providers/stripe` → FastAPI `/admin/config/providers/stripe`
+
+**Billing API Endpoints** (for agents):
+- `/v1/billing/*` → proxied to FastAPI `/v1/billing/*`
+
+### JavaScript API Calls
+
+When making API calls from dashboard.js, use:
+- OAuth: `/admin/oauth/*` (no `/api/`)
+- Admin API: `/admin/api/*` (with `/api/`)
+
+**Example:**
+```javascript
+// OAuth - no /api/ prefix
+fetch('/admin/oauth/user', { headers: { Authorization: `Bearer ${token}` } })
+
+// Admin API - with /api/ prefix
+fetch('/admin/api/analytics/overview', { headers: { Authorization: `Bearer ${token}` } })
+fetch('/admin/api/api-keys', { method: 'POST', ... })
+```
+
+---
+
 ## Database Schema
 
 **Migration Chain (All 2025-10-08):**
