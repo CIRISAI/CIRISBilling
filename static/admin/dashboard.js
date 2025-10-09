@@ -43,8 +43,8 @@ function initializeApp() {
     document.getElementById('admin-name').textContent = currentUser.full_name;
     document.getElementById('admin-role').textContent = currentUser.role.replace('_', ' ').toUpperCase();
 
-    // Load dashboard
-    loadTabData('dashboard');
+    // Initialize tab visibility and load dashboard
+    switchTab('dashboard');
 }
 
 async function logout() {
@@ -130,8 +130,10 @@ function switchTab(tabName) {
         if (content) {
             if (tab === tabName) {
                 content.classList.remove('hidden');
+                content.style.display = 'block';
             } else {
                 content.classList.add('hidden');
+                content.style.display = 'none';
             }
         }
     });
