@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from prometheus_client import generate_latest
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_routes import router as admin_router
@@ -57,6 +58,22 @@ app = FastAPI(
 # Setup tracing
 setup_tracing()
 instrument_fastapi(app)
+
+# Proxy headers middleware - trust X-Forwarded-* headers from nginx
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    """Middleware to handle X-Forwarded-* headers from reverse proxy."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Fix scheme based on X-Forwarded-Proto header
+        forwarded_proto = request.headers.get("X-Forwarded-Proto")
+        if forwarded_proto:
+            # Update request scope to reflect actual protocol
+            request.scope["scheme"] = forwarded_proto
+
+        response = await call_next(request)
+        return response
+
+app.add_middleware(ProxyHeadersMiddleware)
 
 # CORS middleware
 app.add_middleware(
