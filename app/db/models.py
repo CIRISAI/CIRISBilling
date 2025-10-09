@@ -348,9 +348,6 @@ class APIKey(Base):
         String(20), nullable=False, default="active"
     )
 
-    # Flexible metadata storage (renamed from metadata to avoid SQLAlchemy conflict)
-    key_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-
     __table_args__ = (
         CheckConstraint(
             "environment IN ('test', 'live')",
