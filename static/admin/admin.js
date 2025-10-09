@@ -17,8 +17,8 @@ let apiKeys = [];
 // ============================================================================
 
 function initiateGoogleLogin() {
-    // Redirect to Google OAuth
-    const redirectUri = window.location.origin + '/admin';
+    // Redirect to Google OAuth (return to root after login)
+    const redirectUri = window.location.origin + '/';
     window.location.href = `${API_BASE_URL}/admin/oauth/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
 }
 
@@ -32,7 +32,7 @@ async function handleOAuthCallback() {
         localStorage.setItem(TOKEN_KEY, token);
 
         // Remove token from URL
-        window.history.replaceState({}, document.title, '/admin');
+        window.history.replaceState({}, document.title, '/');
 
         // Fetch user info
         try {
@@ -691,6 +691,11 @@ function getKeyStatusBadge(status) {
 // ============================================================================
 
 window.addEventListener('DOMContentLoaded', async () => {
+    // Ensure all screens start hidden except loading
+    document.getElementById('loading').classList.remove('hidden');
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app').classList.add('hidden');
+
     // Check if we're returning from OAuth callback
     const urlParams = new URLSearchParams(window.location.search);
     const hasToken = urlParams.get('token');
