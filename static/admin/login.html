@@ -40,9 +40,10 @@
     <script>
         const API_BASE_URL = window.location.origin;
         const TOKEN_KEY = 'ciris_billing_admin_token';
+        const USER_KEY = 'ciris_billing_admin_user';
 
         // Check if already logged in
-        if (localStorage.getItem(TOKEN_KEY)) {
+        if (localStorage.getItem(TOKEN_KEY) && localStorage.getItem(USER_KEY)) {
             window.location.href = '/admin/dashboard.html';
         }
 
@@ -51,8 +52,40 @@
         const token = urlParams.get('token');
 
         if (token) {
+            // Store token and fetch user info
             localStorage.setItem(TOKEN_KEY, token);
-            window.location.href = '/admin/dashboard.html';
+
+            // Fetch user info from API
+            fetch(`${API_BASE_URL}/admin/oauth/user`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to fetch user info');
+                }
+                return response.json();
+            })
+            .then(user => {
+                // Store user info
+                localStorage.setItem(USER_KEY, JSON.stringify({
+                    id: user.id,
+                    email: user.email,
+                    full_name: user.name,
+                    picture_url: user.picture,
+                    role: user.role
+                }));
+                // Redirect to dashboard
+                window.location.href = '/admin/dashboard.html';
+            })
+            .catch(error => {
+                console.error('Login error:', error);
+                localStorage.removeItem(TOKEN_KEY);
+                const errorDiv = document.getElementById('login-error');
+                errorDiv.textContent = 'Failed to complete login. Please try again.';
+                errorDiv.classList.remove('hidden');
+            });
         }
 
         function initiateGoogleLogin() {
