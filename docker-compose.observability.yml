@@ -1,0 +1,91 @@
+# Docker Compose for Observability Stack
+# OpenTelemetry Collector, Jaeger, Prometheus, Grafana
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # OpenTelemetry Collector
+  # ============================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.93.0
+    container_name: ciris-billing-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./docker/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8888:8888"   # Prometheus metrics (collector itself)
+      - "8889:8889"   # Prometheus exporter (collected metrics)
+    networks:
+      - billing-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Jaeger - Distributed Tracing UI
+  # ============================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    container_name: ciris-billing-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14250:14250"  # gRPC
+    networks:
+      - billing-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Prometheus - Metrics Storage
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: ciris-billing-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"  # Prometheus UI (avoid conflict with metrics port)
+    networks:
+      - billing-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Grafana - Visualization Dashboard
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: ciris-billing-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - ./docker/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./docker/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"   # Grafana UI
+    networks:
+      - billing-network
+    depends_on:
+      - prometheus
+      - jaeger
+    restart: unless-stopped
+
+networks:
+  billing-network:
+    external: true  # Use the network from main docker-compose
+
+volumes:
+  prometheus-data:
+  grafana-data:

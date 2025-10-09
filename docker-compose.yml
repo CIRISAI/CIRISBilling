@@ -1,0 +1,187 @@
+# Docker Compose for CIRIS Billing API
+# Includes: Primary Postgres, Replica Postgres, PgBouncer, Multiple API instances, Nginx
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # PostgreSQL Primary Database
+  # ============================================================================
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: ciris-billing-db-primary
+    environment:
+      POSTGRES_DB: ciris_billing
+      POSTGRES_USER: billing_admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme123}
+      POSTGRES_REPLICATION_MODE: master
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator123}
+    volumes:
+      - postgres-primary-data:/var/lib/postgresql/data
+      - ./docker/postgres/primary/init.sh:/docker-entrypoint-initdb.d/init.sh
+      - ./docker/postgres/primary/postgresql.conf:/etc/postgresql/postgresql.conf
+    ports:
+      - "5432:5432"
+    networks:
+      - billing-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing_admin -d ciris_billing"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================================================
+  # PostgreSQL Replica Database
+  # ============================================================================
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: ciris-billing-db-replica
+    environment:
+      POSTGRES_DB: ciris_billing
+      POSTGRES_USER: billing_admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme123}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-replica-data:/var/lib/postgresql/data
+      - ./docker/postgres/replica/setup-replica.sh:/docker-entrypoint-initdb.d/setup-replica.sh
+    ports:
+      - "5433:5432"
+    networks:
+      - billing-network
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================================================
+  # PgBouncer Connection Pooler
+  # ============================================================================
+  pgbouncer:
+    image: edoburu/pgbouncer:1.21.0
+    container_name: ciris-billing-pgbouncer
+    environment:
+      DATABASE_URL: postgres://billing_admin:${DB_PASSWORD:-changeme123}@postgres-primary:5432/ciris_billing
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 25
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+    ports:
+      - "6432:5432"
+    networks:
+      - billing-network
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ============================================================================
+  # Billing API - Instance 1
+  # ============================================================================
+  billing-api-1:
+    build: .
+    container_name: ciris-billing-api-1
+    environment:
+      DATABASE_URL: postgresql+asyncpg://billing_admin:${DB_PASSWORD:-changeme123}@pgbouncer:5432/ciris_billing
+      DATABASE_READ_URL: postgresql+asyncpg://billing_admin:${DB_PASSWORD:-changeme123}@postgres-replica:5432/ciris_billing
+      API_PORT: 8000
+      API_HOST: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - billing-network
+    depends_on:
+      - pgbouncer
+      - postgres-replica
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ============================================================================
+  # Billing API - Instance 2
+  # ============================================================================
+  billing-api-2:
+    build: .
+    container_name: ciris-billing-api-2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://billing_admin:${DB_PASSWORD:-changeme123}@pgbouncer:5432/ciris_billing
+      DATABASE_READ_URL: postgresql+asyncpg://billing_admin:${DB_PASSWORD:-changeme123}@postgres-replica:5432/ciris_billing
+      API_PORT: 8000
+      API_HOST: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - billing-network
+    depends_on:
+      - pgbouncer
+      - postgres-replica
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ============================================================================
+  # Billing API - Instance 3
+  # ============================================================================
+  billing-api-3:
+    build: .
+    container_name: ciris-billing-api-3
+    environment:
+      DATABASE_URL: postgresql+asyncpg://billing_admin:${DB_PASSWORD:-changeme123}@pgbouncer:5432/ciris_billing
+      DATABASE_READ_URL: postgresql+asyncpg://billing_admin:${DB_PASSWORD:-changeme123}@postgres-replica:5432/ciris_billing
+      API_PORT: 8000
+      API_HOST: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - billing-network
+    depends_on:
+      - pgbouncer
+      - postgres-replica
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ============================================================================
+  # Nginx Load Balancer
+  # ============================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: ciris-billing-nginx
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    networks:
+      - billing-network
+    depends_on:
+      - billing-api-1
+      - billing-api-2
+      - billing-api-3
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  billing-network:
+    driver: bridge
+
+volumes:
+  postgres-primary-data:
+  postgres-replica-data:

@@ -1,0 +1,809 @@
+CIRIS Agent - Frontend Billing UI Requirements
+===============================================
+
+Version: 1.0
+Date: 2025-01-08
+Architecture: Frontend → Agent API → Billing Backend
+
+IMPORTANT: Frontend NEVER communicates directly with billing backend.
+All billing operations go through the Agent API endpoints.
+
+
+TABLE OF CONTENTS
+-----------------
+1. Overview
+2. Agent API Endpoints
+3. Credit Display Component
+4. Purchase Flow Component
+5. Payment Modal/Embed
+6. Error States
+7. Loading States
+8. Success States
+9. Design Specifications
+10. Technical Requirements
+11. Testing Requirements
+
+
+1. OVERVIEW
+-----------
+
+The frontend needs to integrate billing functionality to:
+- Display user's credit balance (free uses + paid credits)
+- Show purchase prompt when credits exhausted
+- Handle Stripe payment flow
+- Update credit display after purchase
+
+Architecture Flow:
+  User Action → Frontend → Agent API → Billing Backend → Stripe
+                   ↓
+              Display Updates
+
+
+2. AGENT API ENDPOINTS
+----------------------
+
+Frontend consumes these endpoints from the Agent API:
+
+GET /api/credits
+  Purpose: Get current user's credit status
+  Auth: User session token (existing auth)
+  Response:
+    {
+      "has_credit": boolean,
+      "credits_remaining": number,
+      "free_uses_remaining": number,
+      "total_uses": number,
+      "plan_name": string,
+      "purchase_required": boolean,
+      "purchase_options": {
+        "price_minor": number,    // e.g., 500 = $5.00
+        "uses": number,           // e.g., 20 uses
+        "currency": string        // e.g., "USD"
+      } | null
+    }
+
+POST /api/purchase/initiate
+  Purpose: Start payment flow
+  Auth: User session token
+  Request:
+    {
+      "return_url": string (optional)
+    }
+  Response:
+    {
+      "payment_id": string,
+      "client_secret": string,
+      "amount_minor": number,
+      "currency": string,
+      "uses_purchased": number,
+      "publishable_key": string
+    }
+
+GET /api/purchase/status/{payment_id}
+  Purpose: Check if payment completed (optional - for polling)
+  Auth: User session token
+  Response:
+    {
+      "status": "succeeded" | "pending" | "failed",
+      "credits_added": number,
+      "balance_after": number | null
+    }
+
+NOTE: These endpoints are part of the Agent API, not the billing backend.
+See: ../INTEGRATION.md for implementation details.
+
+
+3. CREDIT DISPLAY COMPONENT
+----------------------------
+
+Component: CreditBalance
+Location: Header/Top navigation bar
+Update Frequency: On page load, after messages, after purchase
+
+Display States:
+
+A. Free Tier (New Users)
+   Text: "3 free tries remaining"
+   Icon: 🎁 or ⭐
+   Color: Green (#10B981)
+   Tooltip: "Try Datum for free! No credit card required."
+
+B. Free Tier (Partially Used)
+   Text: "2 free tries remaining"
+   Icon: 🎁 or ⭐
+   Color: Yellow/Orange (#F59E0B) if 1 remaining
+   Tooltip: "You have X free tries left."
+
+C. Free Tier Exhausted, No Purchase
+   Text: "0 credits remaining"
+   Icon: 💳 or 🛒
+   Color: Red (#EF4444)
+   Tooltip: "Purchase more uses to continue"
+   Action: Shows purchase modal on click
+
+D. Paid Credits Available
+   Text: "15 credits remaining"
+   Icon: 💵 or ⚡
+   Color: Blue (#3B82F6)
+   Tooltip: "Click to purchase more"
+   Action: Shows purchase modal on click
+
+E. Paid Credits Low (< 5)
+   Text: "3 credits remaining"
+   Icon: ⚠️
+   Color: Orange (#F59E0B)
+   Tooltip: "Running low! Purchase more to avoid interruptions"
+   Action: Shows purchase modal on click
+
+Implementation:
+
+```typescript
+interface CreditStatus {
+  hasCredit: boolean;
+  creditsRemaining: number;
+  freeUsesRemaining: number;
+  totalUses: number;
+  planName: string;
+  purchaseRequired: boolean;
+  purchaseOptions?: {
+    priceMinor: number;
+    uses: number;
+    currency: string;
+  };
+}
+
+async function fetchCreditStatus(): Promise<CreditStatus> {
+  const response = await fetch('/api/credits', {
+    headers: {
+      'Authorization': `Bearer ${userToken}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch credit status');
+  }
+
+  return await response.json();
+}
+
+function CreditBalance() {
+  const [credits, setCredits] = useState<CreditStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadCredits();
+  }, []);
+
+  async function loadCredits() {
+    try {
+      const status = await fetchCreditStatus();
+      setCredits(status);
+    } catch (error) {
+      console.error('Failed to load credits:', error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (loading) {
+    return <CreditBalanceSkeleton />;
+  }
+
+  if (!credits) {
+    return null;
+  }
+
+  // Determine display state
+  const isFree = credits.freeUsesRemaining > 0;
+  const isLow = credits.creditsRemaining < 5 && credits.freeUsesRemaining === 0;
+  const isEmpty = !credits.hasCredit;
+
+  return (
+    <div
+      className={`credit-balance ${isEmpty ? 'empty' : isLow ? 'low' : ''}`}
+      onClick={() => isEmpty && showPurchaseModal()}
+    >
+      <Icon type={isFree ? 'gift' : isEmpty ? 'cart' : 'credits'} />
+      <span className="credit-text">
+        {isFree
+          ? `${credits.freeUsesRemaining} free tries remaining`
+          : `${credits.creditsRemaining} credits remaining`
+        }
+      </span>
+      {isEmpty && <Badge>Purchase</Badge>}
+    </div>
+  );
+}
+```
+
+Refresh Triggers:
+- On component mount
+- After sending a message
+- After purchase completion
+- When returning from payment (if using redirect flow)
+- Every 30 seconds (optional, for real-time updates)
+
+
+4. PURCHASE FLOW COMPONENT
+---------------------------
+
+Component: PurchaseModal
+Trigger:
+  - User clicks credit display when empty
+  - Agent returns "purchase_required" message
+  - Automatic on first exhaustion of free tier
+
+Flow:
+
+Step 1: Purchase Prompt
+  Title: "Continue with Datum"
+  Message: "You've used your 3 free tries! Purchase more to continue."
+  Offer: "20 uses for $5.00"
+  Buttons:
+    - Primary: "Purchase 20 uses ($5.00)"
+    - Secondary: "Not now"
+
+Step 2: Payment Form (Stripe Elements)
+  Fields:
+    - Card number (Stripe CardNumber element)
+    - Expiry date (Stripe CardExpiry element)
+    - CVC (Stripe CardCvc element)
+    - Email (pre-filled from user account)
+  Footer:
+    - "Powered by Stripe" badge
+    - "Secure payment" icon 🔒
+  Buttons:
+    - Primary: "Pay $5.00"
+    - Secondary: "Cancel"
+
+Step 3: Processing
+  Show spinner with message: "Processing payment..."
+  Disable all inputs
+  Show Stripe 3D Secure iframe if required
+
+Step 4: Success
+  Title: "Purchase successful!"
+  Message: "20 uses added to your account"
+  Updated balance: "You now have 20 credits"
+  Button: "Continue"
+  Auto-close after 2 seconds
+
+Step 5: Error (if payment fails)
+  Title: "Payment failed"
+  Message: [Stripe error message]
+  Buttons:
+    - "Try again"
+    - "Cancel"
+
+Implementation:
+
+```typescript
+interface PurchaseResponse {
+  paymentId: string;
+  clientSecret: string;
+  amountMinor: number;
+  currency: string;
+  usesPurchased: number;
+  publishableKey: string;
+}
+
+function PurchaseModal({ isOpen, onClose }: PurchaseModalProps) {
+  const [step, setStep] = useState<'prompt' | 'payment' | 'processing' | 'success' | 'error'>('prompt');
+  const [stripe, setStripe] = useState<Stripe | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [purchaseInfo, setPurchaseInfo] = useState<PurchaseResponse | null>(null);
+
+  // Initialize Stripe
+  useEffect(() => {
+    if (step === 'payment' && !stripe) {
+      initializeStripe();
+    }
+  }, [step]);
+
+  async function initializeStripe() {
+    try {
+      // Get payment intent from agent API
+      const response = await fetch('/api/purchase/initiate', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${userToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          return_url: window.location.href
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to initiate purchase');
+      }
+
+      const data: PurchaseResponse = await response.json();
+      setPurchaseInfo(data);
+
+      // Initialize Stripe with publishable key from response
+      const stripeInstance = await loadStripe(data.publishableKey);
+      setStripe(stripeInstance);
+
+    } catch (err) {
+      setError('Failed to initialize payment. Please try again.');
+      setStep('error');
+    }
+  }
+
+  async function handlePayment(paymentMethod: any) {
+    if (!stripe || !purchaseInfo) return;
+
+    setStep('processing');
+
+    try {
+      // Confirm payment with Stripe
+      const { error, paymentIntent } = await stripe.confirmCardPayment(
+        purchaseInfo.clientSecret,
+        {
+          payment_method: paymentMethod.id,
+        }
+      );
+
+      if (error) {
+        setError(error.message || 'Payment failed');
+        setStep('error');
+      } else if (paymentIntent.status === 'succeeded') {
+        // Payment successful
+        setStep('success');
+
+        // Refresh credit balance
+        await refreshCredits();
+
+        // Auto-close after 2 seconds
+        setTimeout(() => {
+          onClose();
+        }, 2000);
+      }
+    } catch (err) {
+      setError('An unexpected error occurred');
+      setStep('error');
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose}>
+      {step === 'prompt' && (
+        <PurchasePrompt
+          onPurchase={() => setStep('payment')}
+          onCancel={onClose}
+        />
+      )}
+
+      {step === 'payment' && stripe && purchaseInfo && (
+        <PaymentForm
+          stripe={stripe}
+          purchaseInfo={purchaseInfo}
+          onSubmit={handlePayment}
+          onCancel={onClose}
+        />
+      )}
+
+      {step === 'processing' && (
+        <ProcessingState message="Processing payment..." />
+      )}
+
+      {step === 'success' && purchaseInfo && (
+        <SuccessState
+          usesPurchased={purchaseInfo.usesPurchased}
+          onClose={onClose}
+        />
+      )}
+
+      {step === 'error' && (
+        <ErrorState
+          error={error}
+          onRetry={() => setStep('payment')}
+          onCancel={onClose}
+        />
+      )}
+    </Modal>
+  );
+}
+```
+
+
+5. PAYMENT MODAL/EMBED
+-----------------------
+
+Design Requirements:
+
+Modal:
+  - Size: 480px width, auto height
+  - Position: Center of screen
+  - Overlay: Semi-transparent dark (#000000 40% opacity)
+  - Border radius: 12px
+  - Shadow: Large drop shadow
+  - Animations: Fade in/out, slide up
+
+Payment Form (using Stripe Elements):
+  - Card input: Full-width Stripe CardElement
+  - Styling: Match your design system
+  - Error display: Below input with red text
+  - Loading state: Disable inputs, show spinner on button
+  - Mobile responsive: Full-screen modal on mobile
+
+Stripe Elements Configuration:
+
+```typescript
+const stripeElementsOptions = {
+  appearance: {
+    theme: 'stripe', // or 'night', 'flat'
+    variables: {
+      colorPrimary: '#3B82F6',        // Your brand color
+      colorBackground: '#FFFFFF',
+      colorText: '#1F2937',
+      colorDanger: '#EF4444',
+      fontFamily: 'Inter, system-ui, sans-serif',
+      spacingUnit: '4px',
+      borderRadius: '8px',
+    }
+  }
+};
+
+const elements = stripe.elements(stripeElementsOptions);
+const cardElement = elements.create('card', {
+  style: {
+    base: {
+      fontSize: '16px',
+      color: '#1F2937',
+      '::placeholder': {
+        color: '#9CA3AF'
+      }
+    },
+    invalid: {
+      color: '#EF4444',
+      iconColor: '#EF4444'
+    }
+  }
+});
+
+cardElement.mount('#card-element');
+```
+
+Alternative: Stripe Checkout (Redirect Flow)
+  - Simpler implementation
+  - Redirects to Stripe-hosted page
+  - Returns to your return_url after payment
+  - Use if you want minimal frontend code
+
+```typescript
+// Simpler redirect-based flow
+async function purchaseWithCheckout() {
+  const response = await fetch('/api/purchase/initiate', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${userToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      return_url: `${window.location.origin}/purchase/complete`
+    })
+  });
+
+  const data = await response.json();
+
+  // Redirect to Stripe Checkout
+  const stripe = await loadStripe(data.publishableKey);
+  await stripe.redirectToCheckout({
+    sessionId: data.checkoutSessionId  // If using Checkout Sessions
+  });
+}
+```
+
+
+6. ERROR STATES
+---------------
+
+Display these errors gracefully:
+
+A. Network Error (Agent API unreachable)
+   Title: "Connection error"
+   Message: "Unable to connect to server. Please check your internet connection."
+   Actions: "Retry" button
+
+B. Payment Failed (Card declined)
+   Title: "Payment failed"
+   Message: [Stripe error message, e.g., "Your card was declined"]
+   Actions: "Try again" button
+
+C. Insufficient Funds
+   Title: "Payment failed"
+   Message: "Your card has insufficient funds"
+   Actions: "Try different card" button
+
+D. Invalid Card
+   Title: "Invalid card"
+   Message: "Please check your card details and try again"
+   Actions: "Retry" button
+
+E. Service Unavailable
+   Title: "Service temporarily unavailable"
+   Message: "Our payment system is currently unavailable. Please try again in a few minutes."
+   Actions: "Close" button
+
+Error Display Component:
+
+```typescript
+function ErrorDisplay({ error, onRetry, onClose }: ErrorDisplayProps) {
+  return (
+    <div className="error-state">
+      <Icon type="error" color="red" size={48} />
+      <h3 className="error-title">Payment Failed</h3>
+      <p className="error-message">{error}</p>
+      <div className="error-actions">
+        <Button variant="primary" onClick={onRetry}>
+          Try Again
+        </Button>
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+      </div>
+      <small className="error-help">
+        Need help? <a href="/support">Contact support</a>
+      </small>
+    </div>
+  );
+}
+```
+
+
+7. LOADING STATES
+-----------------
+
+Show loading indicators for:
+
+A. Fetching Credit Balance
+   Component: Credit display shows skeleton/spinner
+   Duration: Typically < 500ms
+
+B. Initiating Purchase
+   Component: Modal shows loading spinner
+   Message: "Preparing payment..."
+   Duration: Typically < 1s
+
+C. Processing Payment
+   Component: Modal shows full-screen spinner
+   Message: "Processing payment..."
+   Important: Prevent user from closing modal
+   Duration: 2-10s (includes 3D Secure if required)
+
+D. Confirming Purchase
+   Component: Show spinner
+   Message: "Confirming purchase..."
+   Duration: < 1s
+
+Loading Component:
+
+```typescript
+function LoadingState({ message }: LoadingStateProps) {
+  return (
+    <div className="loading-state">
+      <Spinner size="large" />
+      <p className="loading-message">{message}</p>
+    </div>
+  );
+}
+```
+
+
+8. SUCCESS STATES
+-----------------
+
+A. Purchase Complete
+   Display:
+     - Checkmark icon (✓) in green
+     - Title: "Purchase successful!"
+     - Message: "20 uses added to your account"
+     - Updated balance: "You now have 20 credits"
+   Animation: Confetti or success animation (optional)
+   Auto-close: After 2 seconds
+   Update: Refresh credit display immediately
+
+B. Credits Refreshed
+   Display: Brief toast notification (optional)
+   Message: "Credits updated"
+   Duration: 2 seconds
+
+Success Component:
+
+```typescript
+function SuccessState({ usesPurchased, newBalance }: SuccessStateProps) {
+  return (
+    <div className="success-state">
+      <Icon type="checkmark" color="green" size={64} />
+      <h3 className="success-title">Purchase Successful!</h3>
+      <p className="success-message">
+        {usesPurchased} uses added to your account
+      </p>
+      <div className="success-balance">
+        <span className="balance-label">New balance:</span>
+        <span className="balance-value">{newBalance} credits</span>
+      </div>
+      <Button onClick={onClose}>Continue</Button>
+    </div>
+  );
+}
+```
+
+
+9. DESIGN SPECIFICATIONS
+-------------------------
+
+Colors:
+  - Primary: #3B82F6 (Blue)
+  - Success: #10B981 (Green)
+  - Warning: #F59E0B (Orange)
+  - Error: #EF4444 (Red)
+  - Text primary: #1F2937
+  - Text secondary: #6B7280
+  - Background: #FFFFFF
+  - Background secondary: #F9FAFB
+
+Typography:
+  - Font family: Inter, system-ui, sans-serif
+  - Heading: 24px bold
+  - Body: 16px regular
+  - Caption: 14px regular
+  - Small: 12px regular
+
+Spacing:
+  - Small: 8px
+  - Medium: 16px
+  - Large: 24px
+  - XLarge: 32px
+
+Animations:
+  - Fade in: 200ms ease-out
+  - Fade out: 150ms ease-in
+  - Slide up: 250ms ease-out
+  - Spinner: 1s linear infinite
+
+Accessibility:
+  - ARIA labels on all interactive elements
+  - Keyboard navigation support
+  - Focus indicators
+  - Screen reader friendly
+  - Color contrast ratios: WCAG AA minimum
+
+
+10. TECHNICAL REQUIREMENTS
+---------------------------
+
+Dependencies:
+  - @stripe/stripe-js: ^2.4.0
+  - @stripe/react-stripe-js: ^2.4.0 (if using React)
+
+Package Installation:
+```bash
+npm install @stripe/stripe-js @stripe/react-stripe-js
+```
+
+Browser Support:
+  - Chrome 90+
+  - Firefox 88+
+  - Safari 14+
+  - Edge 90+
+  - Mobile Safari 14+
+  - Chrome Mobile 90+
+
+Environment Variables:
+  REACT_APP_AGENT_API_URL=https://agent.yourdomain.com
+  (Note: Stripe publishable key comes from agent API response)
+
+API Error Handling:
+  - Implement exponential backoff for retries
+  - Maximum 3 retry attempts
+  - Show user-friendly error messages
+  - Log errors to monitoring service
+
+Security:
+  - Use HTTPS only
+  - Validate user session token
+  - Never expose Stripe secret keys
+  - Implement CSRF protection
+  - Rate limit API calls
+
+
+11. TESTING REQUIREMENTS
+-------------------------
+
+Unit Tests:
+  - CreditBalance component renders correctly
+  - PurchaseModal state transitions
+  - Error handling displays correct messages
+  - Success state updates credit display
+
+Integration Tests:
+  - Complete purchase flow end-to-end
+  - Credit display updates after purchase
+  - Error states display correctly
+  - Loading states show/hide appropriately
+
+Manual Testing Checklist:
+  [ ] Credit balance displays on page load
+  [ ] Free tier shows correctly (3, 2, 1, 0)
+  [ ] Purchase modal opens when credits exhausted
+  [ ] Can initiate purchase
+  [ ] Can enter card details
+  [ ] Payment processes successfully (test card)
+  [ ] Success message displays
+  [ ] Credit balance updates after purchase
+  [ ] Can handle payment failure
+  [ ] Error messages display correctly
+  [ ] Can retry failed payment
+  [ ] Modal closes properly
+  [ ] Works on mobile devices
+  [ ] Works on different browsers
+  [ ] 3D Secure challenge works (if required)
+
+Stripe Test Cards:
+  Success: 4242 4242 4242 4242
+  Decline: 4000 0000 0000 9995
+  3D Secure: 4000 0025 0000 3155
+  Expiry: Any future date
+  CVC: Any 3 digits
+
+Testing URLs:
+  Local: http://localhost:3000
+  Staging: https://staging.yourdomain.com
+  Agent API: https://agent.yourdomain.com/api/credits
+
+
+IMPLEMENTATION CHECKLIST
+-------------------------
+
+Backend (Agent API):
+  [ ] Implement GET /api/credits endpoint
+  [ ] Implement POST /api/purchase/initiate endpoint
+  [ ] Implement GET /api/purchase/status/{payment_id} endpoint (optional)
+  [ ] Add billing_client.py module
+  [ ] Test agent API endpoints
+
+Frontend:
+  [ ] Install Stripe dependencies
+  [ ] Create CreditBalance component
+  [ ] Create PurchaseModal component
+  [ ] Create PaymentForm component
+  [ ] Implement Stripe Elements
+  [ ] Add loading states
+  [ ] Add error states
+  [ ] Add success states
+  [ ] Add credit refresh logic
+  [ ] Style components to match design system
+  [ ] Add responsive mobile styles
+  [ ] Test on multiple browsers
+  [ ] Test with Stripe test cards
+  [ ] Add analytics tracking (optional)
+
+Documentation:
+  [ ] Update frontend README
+  [ ] Document component API
+  [ ] Create user guide for purchase flow
+  [ ] Update deployment docs
+
+
+SUPPORT & REFERENCES
+---------------------
+
+Agent API Documentation:
+  See: ../INTEGRATION.md (section "Agent API Endpoints for Frontend")
+
+Stripe Documentation:
+  - Elements: https://stripe.com/docs/stripe-js/react
+  - Payment Intents: https://stripe.com/docs/payments/payment-intents
+  - Testing: https://stripe.com/docs/testing
+
+Example Implementations:
+  - Stripe Elements demo: https://stripe.dev/elements-examples/
+  - Payment flow: https://github.com/stripe-samples/accept-a-payment
+
+Questions?
+  - Check ../INTEGRATION.md for agent API details
+  - Check ../STRIPE_INTEGRATION.md for backend setup
+  - Contact backend team for agent API issues

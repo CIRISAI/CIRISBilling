@@ -1,0 +1,156 @@
+# Docker Compose for Local Testing
+# Complete end-to-end stack with test data
+
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # PostgreSQL Database (Single Instance for Testing)
+  # ==========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: billing-test-postgres
+    environment:
+      POSTGRES_DB: ciris_billing
+      POSTGRES_USER: billing_admin
+      POSTGRES_PASSWORD: testpass123
+    volumes:
+      - ./docker/postgres/test/init-test-data.sql:/docker-entrypoint-initdb.d/99-test-data.sql
+      - postgres-test-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - billing-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing_admin -d ciris_billing"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Billing API
+  # ==========================================================================
+  billing-api:
+    build: .
+    container_name: billing-test-api
+    environment:
+      # Database (direct connection, no pooler for simplicity)
+      DATABASE_URL: postgresql+asyncpg://billing_admin:testpass123@postgres:5432/ciris_billing
+      DATABASE_READ_URL: postgresql+asyncpg://billing_admin:testpass123@postgres:5432/ciris_billing
+
+      # API
+      API_PORT: 8000
+      API_HOST: 0.0.0.0
+      LOG_LEVEL: DEBUG
+      LOG_FORMAT: json
+
+      # Observability
+      METRICS_ENABLED: "true"
+      TRACING_ENABLED: "true"
+      OTLP_ENDPOINT: http://otel-collector:4317
+      OTLP_INSECURE: "true"
+      SERVICE_NAME: ciris-billing-api-test
+      TRACE_SAMPLE_RATE: "1.0"
+    ports:
+      - "8000:8000"
+    networks:
+      - billing-test-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==========================================================================
+  # OpenTelemetry Collector
+  # ==========================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.93.0
+    container_name: billing-test-otel
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./docker/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus exporter
+    networks:
+      - billing-test-network
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Jaeger - Distributed Tracing
+  # ==========================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    container_name: billing-test-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14250:14250"  # gRPC
+    networks:
+      - billing-test-network
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Prometheus - Metrics
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: billing-test-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./docker/prometheus/prometheus.local.yml:/etc/prometheus/prometheus.yml
+      - prometheus-test-data:/prometheus
+    ports:
+      - "9090:9090"  # Prometheus UI
+    networks:
+      - billing-test-network
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Grafana - Dashboards
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: billing-test-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./docker/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./docker/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-test-data:/var/lib/grafana
+    ports:
+      - "3000:3000"   # Grafana UI
+    networks:
+      - billing-test-network
+    depends_on:
+      - prometheus
+      - jaeger
+    restart: unless-stopped
+
+networks:
+  billing-test-network:
+    driver: bridge
+    name: billing-test-network
+
+volumes:
+  postgres-test-data:
+  prometheus-test-data:
+  grafana-test-data:

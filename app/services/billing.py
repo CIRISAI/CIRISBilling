@@ -1,0 +1,557 @@
+"""
+Billing Service - Core business logic with write verification.
+
+NO DICTIONARIES - All operations use strongly typed domain models.
+"""
+
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Account, Charge, Credit, CreditCheck
+from app.exceptions import (
+    AccountClosedError,
+    AccountNotFoundError,
+    AccountSuspendedError,
+    DataIntegrityError,
+    IdempotencyConflictError,
+    InsufficientCreditsError,
+    WriteVerificationError,
+)
+from app.models.api import (
+    AccountResponse,
+    AccountStatus,
+    ChargeMetadata,
+    ChargeResponse,
+    CreditCheckContext,
+    CreditCheckResponse,
+    CreditResponse,
+)
+from app.models.domain import (
+    AccountData,
+    AccountIdentity,
+    ChargeData,
+    ChargeIntent,
+    CreditData,
+    CreditIntent,
+)
+
+
+class BillingService:
+    """
+    Billing service with write verification.
+
+    All write operations follow the pattern:
+    1. Execute write
+    2. Flush to database
+    3. Read back and verify
+    4. Validate invariants
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialize billing service with database session."""
+        self.session = session
+
+    async def check_credit(
+        self,
+        identity: AccountIdentity,
+        context: CreditCheckContext | None = None,
+    ) -> CreditCheckResponse:
+        """
+        Check if account has sufficient credits (free or paid).
+
+        This is a read-only operation that can be served from replica.
+        Logs the check for audit purposes.
+        """
+        from app.config import settings
+
+        # Find account
+        account = await self._find_account_by_identity(identity)
+
+        # Log credit check for auditing
+        await self._log_credit_check(identity, context, account)
+
+        # Account doesn't exist - no credit
+        if account is None:
+            return CreditCheckResponse(
+                has_credit=False,
+                credits_remaining=None,
+                plan_name=None,
+                reason="Account not found",
+                purchase_required=True,
+                purchase_price_minor=settings.price_per_purchase_minor,
+                purchase_uses=settings.paid_uses_per_purchase,
+            )
+
+        # Account suspended
+        if account.status == AccountStatus.SUSPENDED:
+            return CreditCheckResponse(
+                has_credit=False,
+                credits_remaining=account.balance_minor,
+                plan_name=account.plan_name,
+                reason="Account suspended",
+                free_uses_remaining=account.free_uses_remaining,
+                total_uses=account.total_uses,
+            )
+
+        # Account closed
+        if account.status == AccountStatus.CLOSED:
+            return CreditCheckResponse(
+                has_credit=False,
+                credits_remaining=account.balance_minor,
+                plan_name=account.plan_name,
+                reason="Account closed",
+                free_uses_remaining=account.free_uses_remaining,
+                total_uses=account.total_uses,
+            )
+
+        # Check if account has credit (free uses OR balance)
+        has_free_uses = account.free_uses_remaining > 0
+        has_paid_credits = account.balance_minor > 0
+        has_credit = has_free_uses or has_paid_credits
+
+        # Determine if purchase is required
+        purchase_required = not has_free_uses and not has_paid_credits
+
+        return CreditCheckResponse(
+            has_credit=has_credit,
+            credits_remaining=account.balance_minor,
+            plan_name=account.plan_name,
+            reason=None if has_credit else "No free uses or credits remaining",
+            free_uses_remaining=account.free_uses_remaining,
+            total_uses=account.total_uses,
+            purchase_required=purchase_required,
+            purchase_price_minor=settings.price_per_purchase_minor if purchase_required else None,
+            purchase_uses=settings.paid_uses_per_purchase if purchase_required else None,
+        )
+
+    async def create_charge(self, intent: ChargeIntent) -> ChargeData:
+        """
+        Create a charge (deduct credits from account).
+
+        This operation requires:
+        1. Row-level locking (SELECT FOR UPDATE)
+        2. Balance verification
+        3. Atomic balance update
+        4. Write verification
+
+        Raises:
+            AccountNotFoundError: Account doesn't exist
+            AccountSuspendedError: Account is suspended
+            AccountClosedError: Account is closed
+            InsufficientCreditsError: Insufficient balance
+            IdempotencyConflictError: Duplicate idempotency key
+        """
+        # Check for duplicate idempotency key first
+        if intent.idempotency_key:
+            existing_charge = await self._find_charge_by_idempotency(intent.idempotency_key)
+            if existing_charge:
+                raise IdempotencyConflictError(existing_charge.id)
+
+        # Lock account row for update
+        account = await self._lock_account_for_update(intent.account_identity)
+
+        if account is None:
+            raise AccountNotFoundError(intent.account_identity)
+
+        # Verify account status
+        if account.status == AccountStatus.SUSPENDED:
+            raise AccountSuspendedError(account.id, "Account suspended")
+
+        if account.status == AccountStatus.CLOSED:
+            raise AccountClosedError(account.id)
+
+        # Verify currency matches
+        if account.currency != intent.currency:
+            raise DataIntegrityError(
+                f"Currency mismatch: account={account.currency}, charge={intent.currency}"
+            )
+
+        # Determine if using free use or paid credit
+        using_free_use = account.free_uses_remaining > 0
+
+        if using_free_use:
+            # Use free tier - don't charge balance
+            balance_before = account.balance_minor
+            balance_after = balance_before  # Balance unchanged for free use
+            free_uses_before = account.free_uses_remaining
+            free_uses_after = free_uses_before - 1
+        else:
+            # Use paid credits - charge balance
+            if account.balance_minor < intent.amount_minor:
+                raise InsufficientCreditsError(account.balance_minor, intent.amount_minor)
+
+            balance_before = account.balance_minor
+            balance_after = balance_before - intent.amount_minor
+            free_uses_before = 0
+            free_uses_after = 0
+
+        # Create charge record
+        charge = Charge(
+            account_id=account.id,
+            amount_minor=intent.amount_minor,
+            currency=intent.currency,
+            balance_before=balance_before,
+            balance_after=balance_after,
+            description=intent.description,
+            idempotency_key=intent.idempotency_key,
+            metadata_message_id=intent.metadata.message_id,
+            metadata_agent_id=intent.metadata.agent_id,
+            metadata_channel_id=intent.metadata.channel_id,
+            metadata_request_id=intent.metadata.request_id,
+        )
+
+        self.session.add(charge)
+        await self.session.flush()
+
+        # Verify charge was written
+        verified_charge = await self.session.get(Charge, charge.id)
+        if verified_charge is None:
+            raise WriteVerificationError(f"Charge {charge.id} not found after insert")
+
+        # Update account balance, free uses, and total uses
+        account.balance_minor = balance_after
+        if using_free_use:
+            account.free_uses_remaining = free_uses_after
+        account.total_uses = account.total_uses + 1
+        await self.session.flush()
+
+        # Verify account was updated
+        verified_account = await self.session.get(Account, account.id)
+        if verified_account is None:
+            raise WriteVerificationError(f"Account {account.id} disappeared after update")
+
+        if verified_account.balance_minor != balance_after:
+            raise DataIntegrityError(
+                f"Balance mismatch: expected {balance_after}, got {verified_account.balance_minor}"
+            )
+
+        if using_free_use and verified_account.free_uses_remaining != free_uses_after:
+            raise DataIntegrityError(
+                f"Free uses mismatch: expected {free_uses_after}, got {verified_account.free_uses_remaining}"
+            )
+
+        # Commit transaction
+        await self.session.commit()
+
+        return ChargeData(
+            charge_id=verified_charge.id,
+            account_id=verified_charge.account_id,
+            amount_minor=verified_charge.amount_minor,
+            currency=verified_charge.currency,
+            balance_before=verified_charge.balance_before,
+            balance_after=verified_charge.balance_after,
+            description=verified_charge.description,
+            metadata=ChargeMetadata(
+                message_id=verified_charge.metadata_message_id,
+                agent_id=verified_charge.metadata_agent_id,
+                channel_id=verified_charge.metadata_channel_id,
+                request_id=verified_charge.metadata_request_id,
+            ),
+            created_at=verified_charge.created_at,
+        )
+
+    async def add_credits(self, intent: CreditIntent) -> CreditData:
+        """
+        Add credits to account (purchase, grant, refund).
+
+        This operation requires:
+        1. Row-level locking
+        2. Atomic balance update
+        3. Write verification
+
+        Raises:
+            AccountNotFoundError: Account doesn't exist
+            IdempotencyConflictError: Duplicate idempotency key
+        """
+        # Check for duplicate idempotency key first
+        if intent.idempotency_key:
+            existing_credit = await self._find_credit_by_idempotency(intent.idempotency_key)
+            if existing_credit:
+                raise IdempotencyConflictError(existing_credit.id)
+
+        # Lock account row for update
+        account = await self._lock_account_for_update(intent.account_identity)
+
+        if account is None:
+            raise AccountNotFoundError(intent.account_identity)
+
+        # Verify currency matches
+        if account.currency != intent.currency:
+            raise DataIntegrityError(
+                f"Currency mismatch: account={account.currency}, credit={intent.currency}"
+            )
+
+        # Calculate new balance
+        balance_before = account.balance_minor
+        balance_after = balance_before + intent.amount_minor
+
+        # Create credit record
+        credit = Credit(
+            account_id=account.id,
+            amount_minor=intent.amount_minor,
+            currency=intent.currency,
+            balance_before=balance_before,
+            balance_after=balance_after,
+            transaction_type=intent.transaction_type,
+            description=intent.description,
+            external_transaction_id=intent.external_transaction_id,
+            idempotency_key=intent.idempotency_key,
+        )
+
+        self.session.add(credit)
+        await self.session.flush()
+
+        # Verify credit was written
+        verified_credit = await self.session.get(Credit, credit.id)
+        if verified_credit is None:
+            raise WriteVerificationError(f"Credit {credit.id} not found after insert")
+
+        # Update account balance
+        account.balance_minor = balance_after
+        await self.session.flush()
+
+        # Verify balance was updated
+        verified_account = await self.session.get(Account, account.id)
+        if verified_account is None:
+            raise WriteVerificationError(f"Account {account.id} disappeared after update")
+
+        if verified_account.balance_minor != balance_after:
+            raise DataIntegrityError(
+                f"Balance mismatch: expected {balance_after}, got {verified_account.balance_minor}"
+            )
+
+        # Commit transaction
+        await self.session.commit()
+
+        return CreditData(
+            credit_id=verified_credit.id,
+            account_id=verified_credit.account_id,
+            amount_minor=verified_credit.amount_minor,
+            currency=verified_credit.currency,
+            balance_before=verified_credit.balance_before,
+            balance_after=verified_credit.balance_after,
+            transaction_type=verified_credit.transaction_type,
+            description=verified_credit.description,
+            external_transaction_id=verified_credit.external_transaction_id,
+            created_at=verified_credit.created_at,
+        )
+
+    async def get_or_create_account(
+        self,
+        identity: AccountIdentity,
+        initial_balance_minor: int = 0,
+        currency: str = "USD",
+        plan_name: str = "free",
+        marketing_opt_in: bool = False,
+        marketing_opt_in_source: str | None = None,
+    ) -> AccountData:
+        """
+        Get existing account or create new one (upsert).
+
+        Returns existing account if found, otherwise creates new one.
+        """
+        # Try to find existing account
+        account = await self._find_account_by_identity(identity)
+
+        if account is not None:
+            # Account exists - return it
+            return self._account_to_domain(account)
+
+        # Create new account
+        new_account = Account(
+            oauth_provider=identity.oauth_provider,
+            external_id=identity.external_id,
+            wa_id=identity.wa_id,
+            tenant_id=identity.tenant_id,
+            balance_minor=initial_balance_minor,
+            currency=currency,
+            plan_name=plan_name,
+            status=AccountStatus.ACTIVE,
+            marketing_opt_in=marketing_opt_in,
+            marketing_opt_in_at=utc_now() if marketing_opt_in else None,
+            marketing_opt_in_source=marketing_opt_in_source,
+        )
+
+        self.session.add(new_account)
+
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            # Race condition - account created by another request
+            await self.session.rollback()
+            account = await self._find_account_by_identity(identity)
+            if account is None:
+                raise WriteVerificationError("Account creation failed due to race condition")
+            return self._account_to_domain(account)
+
+        # Verify account was written
+        verified_account = await self.session.get(Account, new_account.id)
+        if verified_account is None:
+            raise WriteVerificationError(f"Account {new_account.id} not found after insert")
+
+        await self.session.commit()
+
+        return self._account_to_domain(verified_account)
+
+    async def get_account(self, identity: AccountIdentity) -> AccountData:
+        """
+        Get account by identity.
+
+        Raises:
+            AccountNotFoundError: Account doesn't exist
+        """
+        account = await self._find_account_by_identity(identity)
+        if account is None:
+            raise AccountNotFoundError(identity)
+        return self._account_to_domain(account)
+
+    async def add_purchased_uses(
+        self,
+        identity: AccountIdentity,
+        uses_to_add: int,
+        payment_id: str,
+        amount_paid_minor: int,
+    ) -> AccountData:
+        """
+        Add purchased uses to account balance.
+
+        This is called after successful Stripe payment.
+        Uses are added as balance (in minor units).
+
+        Args:
+            identity: Account identity
+            uses_to_add: Number of uses purchased
+            payment_id: Stripe payment ID
+            amount_paid_minor: Amount paid in minor units
+
+        Returns:
+            Updated account data
+
+        Raises:
+            AccountNotFoundError: Account doesn't exist
+        """
+        # Lock account for update
+        account = await self._lock_account_for_update(identity)
+        if account is None:
+            raise AccountNotFoundError(identity)
+
+        # Calculate credit amount based on uses purchased
+        # For now, 1 use = 1 credit (in minor units)
+        # This can be adjusted based on pricing model
+        credit_amount = uses_to_add
+
+        # Add credits using existing add_credits method
+        credit_intent = CreditIntent(
+            account_identity=identity,
+            amount_minor=credit_amount,
+            currency="USD",
+            transaction_type=TransactionType.PURCHASE,
+            description=f"Purchase of {uses_to_add} uses via Stripe",
+            external_transaction_id=payment_id,
+            idempotency_key=f"stripe-{payment_id}",
+        )
+
+        await self.add_credits(credit_intent)
+
+        # Return updated account
+        updated_account = await self._find_account_by_identity(identity)
+        if updated_account is None:
+            raise WriteVerificationError(f"Account disappeared after purchase")
+
+        return self._account_to_domain(updated_account)
+
+    # ========================================================================
+    # Private Helper Methods
+    # ========================================================================
+
+    async def _find_account_by_identity(self, identity: AccountIdentity) -> Account | None:
+        """Find account by identity fields."""
+        stmt = select(Account).where(
+            Account.oauth_provider == identity.oauth_provider,
+            Account.external_id == identity.external_id,
+            Account.wa_id == identity.wa_id if identity.wa_id else Account.wa_id.is_(None),
+            Account.tenant_id == identity.tenant_id
+            if identity.tenant_id
+            else Account.tenant_id.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _lock_account_for_update(self, identity: AccountIdentity) -> Account | None:
+        """Lock account row for update (SELECT FOR UPDATE)."""
+        stmt = (
+            select(Account)
+            .where(
+                Account.oauth_provider == identity.oauth_provider,
+                Account.external_id == identity.external_id,
+                Account.wa_id == identity.wa_id if identity.wa_id else Account.wa_id.is_(None),
+                Account.tenant_id == identity.tenant_id
+                if identity.tenant_id
+                else Account.tenant_id.is_(None),
+            )
+            .with_for_update()
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _find_charge_by_idempotency(self, idempotency_key: str) -> Charge | None:
+        """Find charge by idempotency key."""
+        stmt = select(Charge).where(Charge.idempotency_key == idempotency_key)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _find_credit_by_idempotency(self, idempotency_key: str) -> Credit | None:
+        """Find credit by idempotency key."""
+        stmt = select(Credit).where(Credit.idempotency_key == idempotency_key)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _log_credit_check(
+        self,
+        identity: AccountIdentity,
+        context: CreditCheckContext | None,
+        account: Account | None,
+    ) -> None:
+        """Log credit check for auditing."""
+        check = CreditCheck(
+            account_id=account.id if account else None,
+            oauth_provider=identity.oauth_provider,
+            external_id=identity.external_id,
+            wa_id=identity.wa_id,
+            tenant_id=identity.tenant_id,
+            has_credit=account.balance_minor > 0 if account else False,
+            credits_remaining=account.balance_minor if account else None,
+            plan_name=account.plan_name if account else None,
+            denial_reason=(
+                None
+                if account and account.balance_minor > 0
+                else ("Insufficient credits" if account else "Account not found")
+            ),
+            context_agent_id=context.agent_id if context else None,
+            context_channel_id=context.channel_id if context else None,
+            context_request_id=context.request_id if context else None,
+        )
+        self.session.add(check)
+        # Don't wait for flush - this is fire-and-forget logging
+
+    def _account_to_domain(self, account: Account) -> AccountData:
+        """Convert ORM account to domain model."""
+        return AccountData(
+            account_id=account.id,
+            oauth_provider=account.oauth_provider,
+            external_id=account.external_id,
+            wa_id=account.wa_id,
+            tenant_id=account.tenant_id,
+            balance_minor=account.balance_minor,
+            currency=account.currency,
+            plan_name=account.plan_name,
+            status=account.status,
+            marketing_opt_in=account.marketing_opt_in,
+            marketing_opt_in_at=account.marketing_opt_in_at,
+            marketing_opt_in_source=account.marketing_opt_in_source,
+            created_at=account.created_at,
+            updated_at=account.updated_at,
+        )

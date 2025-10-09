@@ -1,0 +1,325 @@
+"""
+API Models - Pydantic models for request/response validation.
+
+NO DICTIONARIES - All data structures are strongly typed.
+"""
+
+from datetime import datetime
+from enum import Enum
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class AccountStatus(str, Enum):
+    """Account status enumeration."""
+
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    CLOSED = "closed"
+
+
+class TransactionType(str, Enum):
+    """Credit transaction type enumeration."""
+
+    PURCHASE = "purchase"
+    GRANT = "grant"
+    REFUND = "refund"
+    ADJUSTMENT = "adjustment"
+
+
+# ============================================================================
+# Credit Check Models
+# ============================================================================
+
+
+class CreditCheckContext(BaseModel):
+    """Context for credit check request - explicit fields, no dict."""
+
+    agent_id: str | None = None
+    channel_id: str | None = None
+    request_id: str | None = None
+
+
+class CreditCheckRequest(BaseModel):
+    """POST /v1/billing/credits/check request body."""
+
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+    context: CreditCheckContext = Field(default_factory=CreditCheckContext)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+
+class CreditCheckResponse(BaseModel):
+    """POST /v1/billing/credits/check response."""
+
+    has_credit: bool
+    credits_remaining: int | None = None
+    plan_name: str | None = None
+    reason: str | None = None
+    free_uses_remaining: int | None = None
+    total_uses: int | None = None
+    purchase_required: bool = False
+    purchase_price_minor: int | None = None
+    purchase_uses: int | None = None
+
+
+# ============================================================================
+# Charge Models
+# ============================================================================
+
+
+class ChargeMetadata(BaseModel):
+    """Metadata for charge - explicit fields, no dict."""
+
+    message_id: str | None = None
+    agent_id: str | None = None
+    channel_id: str | None = None
+    request_id: str | None = None
+
+
+class CreateChargeRequest(BaseModel):
+    """POST /v1/billing/charges request body."""
+
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+    amount_minor: int = Field(..., gt=0)
+    currency: str = Field(..., min_length=3, max_length=3)
+    description: str = Field(..., min_length=1)
+    idempotency_key: str | None = Field(None, max_length=255)
+    metadata: ChargeMetadata = Field(default_factory=ChargeMetadata)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, v: str) -> str:
+        """Ensure currency is uppercase ISO 4217 code."""
+        return v.upper()
+
+
+class ChargeResponse(BaseModel):
+    """POST /v1/billing/charges response."""
+
+    charge_id: UUID
+    account_id: UUID
+    amount_minor: int
+    currency: str
+    balance_after: int
+    created_at: str  # ISO 8601 timestamp
+    description: str
+    metadata: ChargeMetadata
+
+
+class ChargeListItem(BaseModel):
+    """Single charge in list response."""
+
+    charge_id: UUID
+    account_id: UUID
+    amount_minor: int
+    currency: str
+    balance_after: int
+    created_at: str
+    description: str
+    metadata: ChargeMetadata
+
+
+class ListChargesResponse(BaseModel):
+    """GET /v1/billing/charges response."""
+
+    charges: list[ChargeListItem]
+    total_count: int
+    has_more: bool
+
+
+# ============================================================================
+# Credit (Top-up) Models
+# ============================================================================
+
+
+class AddCreditsRequest(BaseModel):
+    """POST /v1/billing/credits request body."""
+
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+    amount_minor: int = Field(..., gt=0)
+    currency: str = Field(..., min_length=3, max_length=3)
+    description: str = Field(..., min_length=1)
+    transaction_type: TransactionType
+    external_transaction_id: str | None = Field(None, max_length=255)
+    idempotency_key: str | None = Field(None, max_length=255)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, v: str) -> str:
+        """Ensure currency is uppercase ISO 4217 code."""
+        return v.upper()
+
+
+class CreditResponse(BaseModel):
+    """POST /v1/billing/credits response."""
+
+    credit_id: UUID
+    account_id: UUID
+    amount_minor: int
+    currency: str
+    balance_after: int
+    transaction_type: TransactionType
+    description: str
+    external_transaction_id: str | None
+    created_at: str
+
+
+# ============================================================================
+# Purchase Models
+# ============================================================================
+
+
+class PurchaseRequest(BaseModel):
+    """POST /v1/billing/purchases request body."""
+
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+    customer_email: str = Field(..., min_length=1)
+    return_url: str | None = Field(None, min_length=1)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+
+class PurchaseResponse(BaseModel):
+    """POST /v1/billing/purchases response."""
+
+    payment_id: str
+    client_secret: str
+    amount_minor: int
+    currency: str
+    uses_purchased: int
+    status: str
+
+
+# ============================================================================
+# Account Models
+# ============================================================================
+
+
+class CreateAccountRequest(BaseModel):
+    """POST /v1/billing/accounts request body."""
+
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+    initial_balance_minor: int = Field(default=0, ge=0)
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    plan_name: str = Field(default="free", min_length=1, max_length=100)
+
+    # Marketing consent (GDPR compliance)
+    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
+    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, v: str) -> str:
+        """Ensure currency is uppercase ISO 4217 code."""
+        return v.upper()
+
+
+class AccountResponse(BaseModel):
+    """Account response model (GET and POST)."""
+
+    account_id: UUID
+    oauth_provider: str
+    external_id: str
+    wa_id: str | None
+    tenant_id: str | None
+    balance_minor: int
+    currency: str
+    plan_name: str
+    status: AccountStatus
+    marketing_opt_in: bool
+    marketing_opt_in_at: str | None
+    marketing_opt_in_source: str | None
+    created_at: str
+    updated_at: str
+
+
+# ============================================================================
+# Health Check Models
+# ============================================================================
+
+
+class HealthResponse(BaseModel):
+    """GET /health response."""
+
+    status: Literal["healthy", "unhealthy"]
+    database: Literal["connected", "disconnected"]
+    timestamp: str
+
+
+# ============================================================================
+# Error Models
+# ============================================================================
+
+
+class ErrorDetail(BaseModel):
+    """Standard error response detail."""
+
+    detail: str
+
+
+class ValidationErrorDetail(BaseModel):
+    """Validation error location."""
+
+    loc: list[str | int]
+    msg: str
+    type: str
+
+
+class ValidationErrorResponse(BaseModel):
+    """422 Validation Error response."""
+
+    detail: list[ValidationErrorDetail]

@@ -1,0 +1,155 @@
+version: '3.8'
+
+# CIRIS Billing Admin UI
+# Separate compose file for admin interface isolation
+# Domain: billing.ciris.ai
+# Serves static admin UI and proxies API requests
+
+services:
+  # Nginx reverse proxy for admin UI
+  nginx-admin:
+    image: nginx:alpine
+    container_name: ciris-billing-admin-nginx
+    restart: unless-stopped
+    ports:
+      - "443:443"  # HTTPS only for admin
+      - "80:80"    # HTTP redirect to HTTPS
+    volumes:
+      # SSL certificates (Let's Encrypt)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Nginx configuration
+      - ./docker/nginx/admin-nginx.conf:/etc/nginx/nginx.conf:ro
+      # Static admin UI files
+      - ./static/admin:/usr/share/nginx/html/admin:ro
+      # Nginx logs
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - ciris-billing-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - billing-api
+
+  # Billing API (for admin endpoints)
+  billing-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ciris-billing-api
+    restart: unless-stopped
+    environment:
+      # Database
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL_READ=${DATABASE_URL_READ:-${DATABASE_URL}}
+      # Stripe
+      - STRIPE_API_KEY=${STRIPE_API_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
+      # Admin OAuth
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - ADMIN_JWT_SECRET=${ADMIN_JWT_SECRET}
+      # Legacy (deprecated)
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-${ADMIN_JWT_SECRET}}
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "127.0.0.1:8000:8000"  # Internal only, accessed via nginx
+    networks:
+      - ciris-billing-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ciris-billing-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-ciris}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-ciris_billing}
+    ports:
+      - "127.0.0.1:5432:5432"  # Internal only
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - ciris-billing-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ciris}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Observability stack (optional, can be disabled in production)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: ciris-billing-jaeger
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:16686:16686"  # Jaeger UI
+      - "127.0.0.1:4317:4317"    # OTLP gRPC
+      - "127.0.0.1:4318:4318"    # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - ciris-billing-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ciris-billing-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=90d'
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - ciris-billing-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ciris-billing-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SERVER_ROOT_URL=https://billing.ciris.ai/grafana
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - ciris-billing-network
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-data:
+    name: ciris-billing-postgres-data
+  prometheus-data:
+    name: ciris-billing-prometheus-data
+  grafana-data:
+    name: ciris-billing-grafana-data
+
+networks:
+  ciris-billing-network:
+    name: ciris-billing-network
+    driver: bridge
