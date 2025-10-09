@@ -56,10 +56,10 @@ class Account(Base):
     total_uses: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     # Status
-    status: Mapped[AccountStatus] = mapped_column(
-        SQLEnum(AccountStatus, name="account_status", native_enum=False, length=20),
+    status: Mapped[str] = mapped_column(
+        String(20),
         nullable=False,
-        default=AccountStatus.ACTIVE,
+        default="active",
     )
 
     # Marketing consent (GDPR compliance)
@@ -68,6 +68,10 @@ class Account(Base):
         DateTime(timezone=True), nullable=True
     )
     marketing_opt_in_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # User metadata
+    user_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Audit timestamps
     created_at: Mapped[datetime] = mapped_column(

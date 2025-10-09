@@ -43,13 +43,14 @@ router = APIRouter()
 @router.post("/v1/billing/credits/check", response_model=CreditCheckResponse)
 async def check_credit(
     request: CreditCheckRequest,
-    db: AsyncSession = Depends(get_read_db),
+    db: AsyncSession = Depends(get_write_db),
     api_key: APIKeyData = Depends(require_permission("billing:read")),
 ) -> CreditCheckResponse:
     """
     Check if account has sufficient credits.
 
-    Read operation - served from replica.
+    Auto-creates new accounts with free credits on first check.
+    Write operation - requires primary database.
     Requires: API key with billing:read permission.
     """
     service = BillingService(db)
@@ -61,7 +62,14 @@ async def check_credit(
         tenant_id=request.tenant_id,
     )
 
-    return await service.check_credit(identity, request.context)
+    return await service.check_credit(
+        identity,
+        request.context,
+        marketing_opt_in=request.marketing_opt_in,
+        marketing_opt_in_source=request.marketing_opt_in_source,
+        user_role=request.user_role,
+        agent_id=request.agent_id,
+    )
 
 
 @router.post(
@@ -268,6 +276,10 @@ async def create_purchase(
             initial_balance_minor=0,
             currency="USD",
             plan_name="free",
+            marketing_opt_in=request.marketing_opt_in,
+            marketing_opt_in_source=request.marketing_opt_in_source,
+            user_role=request.user_role,
+            agent_id=request.agent_id,
         )
     except WriteVerificationError as exc:
         raise HTTPException(
@@ -338,6 +350,8 @@ async def create_or_update_account(
             plan_name=request.plan_name,
             marketing_opt_in=request.marketing_opt_in,
             marketing_opt_in_source=request.marketing_opt_in_source,
+            user_role=request.user_role,
+            agent_id=request.agent_id,
         )
 
         return AccountResponse(

@@ -58,32 +58,65 @@ class BillingService:
         self,
         identity: AccountIdentity,
         context: CreditCheckContext | None = None,
+        marketing_opt_in: bool = False,
+        marketing_opt_in_source: str | None = None,
+        user_role: str | None = None,
+        agent_id: str | None = None,
     ) -> CreditCheckResponse:
         """
         Check if account has sufficient credits (free or paid).
 
-        This is a read-only operation that can be served from replica.
+        Auto-creates new accounts with free credits on first check.
         Logs the check for audit purposes.
         """
         from app.config import settings
+        from app.db.models import utc_now
 
         # Find account
         account = await self._find_account_by_identity(identity)
 
+        # Account doesn't exist - create with free credits
+        if account is None:
+            # Create new account with free uses
+            new_account = Account(
+                oauth_provider=identity.oauth_provider,
+                external_id=identity.external_id,
+                wa_id=identity.wa_id,
+                tenant_id=identity.tenant_id,
+                balance_minor=0,
+                currency="USD",
+                plan_name="free",
+                free_uses_remaining=settings.free_uses_per_account,
+                total_uses=0,
+                marketing_opt_in=marketing_opt_in,
+                marketing_opt_in_at=utc_now() if marketing_opt_in else None,
+                marketing_opt_in_source=marketing_opt_in_source,
+                user_role=user_role,
+                agent_id=agent_id,
+            )
+            # Set status explicitly after creation to avoid enum conversion issues
+            new_account.status = "active"
+
+            self.session.add(new_account)
+
+            try:
+                await self.session.flush()
+                await self.session.commit()
+            except IntegrityError as e:
+                # Race condition - account created by another request
+                from structlog import get_logger
+                logger = get_logger(__name__)
+                logger.error("account_creation_integrity_error", error=str(e), identity=str(identity))
+                await self.session.rollback()
+                account = await self._find_account_by_identity(identity)
+                if account is None:
+                    raise WriteVerificationError(f"Account creation failed: {str(e)}")
+            else:
+                # Successfully created
+                account = new_account
+
         # Log credit check for auditing
         await self._log_credit_check(identity, context, account)
-
-        # Account doesn't exist - no credit
-        if account is None:
-            return CreditCheckResponse(
-                has_credit=False,
-                credits_remaining=None,
-                plan_name=None,
-                reason="Account not found",
-                purchase_required=True,
-                purchase_price_minor=settings.price_per_purchase_minor,
-                purchase_uses=settings.paid_uses_per_purchase,
-            )
 
         # Account suspended
         if account.status == AccountStatus.SUSPENDED:
@@ -347,6 +380,8 @@ class BillingService:
         plan_name: str = "free",
         marketing_opt_in: bool = False,
         marketing_opt_in_source: str | None = None,
+        user_role: str | None = None,
+        agent_id: str | None = None,
     ) -> AccountData:
         """
         Get existing account or create new one (upsert).
@@ -373,6 +408,8 @@ class BillingService:
             marketing_opt_in=marketing_opt_in,
             marketing_opt_in_at=utc_now() if marketing_opt_in else None,
             marketing_opt_in_source=marketing_opt_in_source,
+            user_role=user_role,
+            agent_id=agent_id,
         )
 
         self.session.add(new_account)

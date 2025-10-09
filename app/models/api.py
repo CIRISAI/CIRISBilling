@@ -51,6 +51,14 @@ class CreditCheckRequest(BaseModel):
     tenant_id: str | None = Field(None, max_length=255)
     context: CreditCheckContext = Field(default_factory=CreditCheckContext)
 
+    # User metadata
+    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
+    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+
+    # Marketing consent (GDPR compliance)
+    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
+    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+
     @field_validator("oauth_provider")
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
@@ -100,6 +108,14 @@ class CreateChargeRequest(BaseModel):
     description: str = Field(..., min_length=1)
     idempotency_key: str | None = Field(None, max_length=255)
     metadata: ChargeMetadata = Field(default_factory=ChargeMetadata)
+
+    # User metadata
+    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
+    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+
+    # Marketing consent (GDPR compliance)
+    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
+    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
 
     @field_validator("oauth_provider")
     @classmethod
@@ -169,6 +185,14 @@ class AddCreditsRequest(BaseModel):
     external_transaction_id: str | None = Field(None, max_length=255)
     idempotency_key: str | None = Field(None, max_length=255)
 
+    # User metadata
+    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
+    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+
+    # Marketing consent (GDPR compliance)
+    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
+    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+
     @field_validator("oauth_provider")
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
@@ -213,6 +237,14 @@ class PurchaseRequest(BaseModel):
     customer_email: str = Field(..., min_length=1)
     return_url: str | None = Field(None, min_length=1)
 
+    # User metadata
+    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
+    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+
+    # Marketing consent (GDPR compliance)
+    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
+    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+
     @field_validator("oauth_provider")
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
@@ -248,6 +280,10 @@ class CreateAccountRequest(BaseModel):
     initial_balance_minor: int = Field(default=0, ge=0)
     currency: str = Field(default="USD", min_length=3, max_length=3)
     plan_name: str = Field(default="free", min_length=1, max_length=100)
+
+    # User metadata
+    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
+    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
 
     # Marketing consent (GDPR compliance)
     marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
