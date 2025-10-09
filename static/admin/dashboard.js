@@ -295,7 +295,12 @@ async function viewUserDetails(userId) {
 async function loadAPIKeys() {
     try {
         const data = await apiRequest('/admin/api/api-keys');
-        apiKeys = data.keys || [];
+        apiKeys = data || [];  // API returns array directly, not {keys: [...]}
+
+        // Update count display
+        const countEl = document.getElementById('api-key-count');
+        if (countEl) countEl.textContent = apiKeys.length;
+
         renderAPIKeys();
 
     } catch (error) {
