@@ -670,7 +670,7 @@ async def list_provider_configs(
 
     Accessible by: admin, viewer
     """
-    stmt = select(ProviderConfig).order_by(ProviderConfig.provider_name)
+    stmt = select(ProviderConfig).order_by(ProviderConfig.provider_type)
     result = await db.execute(stmt)
     configs = result.scalars().all()
 
@@ -679,8 +679,8 @@ async def list_provider_configs(
     return [
         ProviderConfigResponse(
             id=config.id,
-            provider_name=config.provider_name,
-            is_enabled=config.is_enabled,
+            provider_name=config.provider_type,
+            is_enabled=config.is_active,
             config_data=config.config_data,
             updated_at=config.updated_at,
         )
@@ -696,28 +696,33 @@ async def update_provider_config(
     admin: AdminUser = Depends(require_admin_role),  # Admin only
 ) -> ProviderConfigResponse:
     """
-    Update provider configuration.
+    Update or create provider configuration.
 
     Accessible by: admin only
     """
-    stmt = select(ProviderConfig).where(ProviderConfig.provider_name == provider_name)
+    stmt = select(ProviderConfig).where(ProviderConfig.provider_type == provider_name)
     result = await db.execute(stmt)
     config = result.scalar_one_or_none()
 
     if not config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider {provider_name} not found",
+        # Create new provider config if it doesn't exist
+        config = ProviderConfig(
+            provider_type=provider_name,
+            is_active=request.is_enabled if request.is_enabled is not None else True,
+            config_data=request.config_data or {},
+            updated_by=admin.id,
         )
+        db.add(config)
+    else:
+        # Update existing config
+        if request.is_enabled is not None:
+            config.is_active = request.is_enabled
 
-    # Update fields
-    if request.is_enabled is not None:
-        config.is_enabled = request.is_enabled
+        if request.config_data is not None:
+            config.config_data = request.config_data
 
-    if request.config_data is not None:
-        config.config_data = request.config_data
-
-    config.updated_at = datetime.now(timezone.utc)
+        config.updated_at = datetime.now(timezone.utc)
+        config.updated_by = admin.id
 
     await db.commit()
     await db.refresh(config)
@@ -730,8 +735,8 @@ async def update_provider_config(
 
     return ProviderConfigResponse(
         id=config.id,
-        provider_name=config.provider_name,
-        is_enabled=config.is_enabled,
+        provider_name=config.provider_type,
+        is_enabled=config.is_active,
         config_data=config.config_data,
         updated_at=config.updated_at,
     )
