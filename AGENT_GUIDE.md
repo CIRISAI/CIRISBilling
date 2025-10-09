@@ -43,10 +43,12 @@ Most keys have both permissions by default.
 
 Accounts are identified using one of these combinations:
 
+**Important:** The `oauth_provider` field must be prefixed with `oauth:`
+
 1. **OAuth Identity** (recommended):
    ```json
    {
-     "oauth_provider": "google",
+     "oauth_provider": "oauth:google",
      "external_id": "user@example.com"
    }
    ```
@@ -54,7 +56,7 @@ Accounts are identified using one of these combinations:
 2. **WhatsApp Identity**:
    ```json
    {
-     "oauth_provider": "whatsapp",
+     "oauth_provider": "oauth:whatsapp",
      "external_id": "whatsapp_user_id",
      "wa_id": "+1234567890"
    }
@@ -63,11 +65,18 @@ Accounts are identified using one of these combinations:
 3. **Multi-tenant Identity**:
    ```json
    {
-     "oauth_provider": "custom",
+     "oauth_provider": "oauth:custom",
      "external_id": "user_id",
      "tenant_id": "org_123"
    }
    ```
+
+**Valid oauth_provider examples:**
+- `oauth:google`
+- `oauth:whatsapp`
+- `oauth:github`
+- `oauth:microsoft`
+- `oauth:custom`
 
 ---
 
@@ -101,12 +110,21 @@ Check if an account has sufficient credits for an operation.
 **Request:**
 ```json
 {
-  "oauth_provider": "google",
+  "oauth_provider": "oauth:google",
   "external_id": "user@example.com",
   "amount_minor": 100,
-  "context": "conversation_message"
+  "context": {
+    "agent_id": "ciris_agent_1",
+    "channel_id": "slack_C12345",
+    "request_id": "req_abc123"
+  }
 }
 ```
+
+**Note:** The `context` field is optional and can contain:
+- `agent_id` - ID of the AI agent making the request
+- `channel_id` - Communication channel (Slack, Discord, etc.)
+- `request_id` - Unique request identifier for tracing
 
 **Response:**
 ```json
@@ -137,7 +155,7 @@ Deduct credits from an account (consume usage).
 **Request:**
 ```json
 {
-  "oauth_provider": "google",
+  "oauth_provider": "oauth:google",
   "external_id": "user@example.com",
   "amount_minor": 100,
   "currency": "USD",
@@ -192,7 +210,7 @@ Add credits to an account (top-up, purchase, or admin grant).
 **Request:**
 ```json
 {
-  "oauth_provider": "google",
+  "oauth_provider": "oauth:google",
   "external_id": "user@example.com",
   "amount_minor": 2000,
   "currency": "USD",
@@ -242,7 +260,7 @@ Create a new billing account or retrieve an existing one.
 **Request:**
 ```json
 {
-  "oauth_provider": "google",
+  "oauth_provider": "oauth:google",
   "external_id": "newuser@example.com",
   "initial_balance_minor": 500,
   "currency": "USD",
@@ -262,7 +280,7 @@ Create a new billing account or retrieve an existing one.
 ```json
 {
   "account_id": "123e4567-e89b-12d3-a456-426614174000",
-  "oauth_provider": "google",
+  "oauth_provider": "oauth:google",
   "external_id": "newuser@example.com",
   "wa_id": null,
   "tenant_id": null,
@@ -300,14 +318,16 @@ Retrieve account details by identity.
 
 **Example Request:**
 ```
-GET /v1/billing/accounts/google/user@example.com
+GET /v1/billing/accounts/oauth:google/user@example.com
 ```
+
+**Note:** URL-encode the provider if needed: `oauth%3Agoogle`
 
 **Response:**
 ```json
 {
   "account_id": "123e4567-e89b-12d3-a456-426614174000",
-  "oauth_provider": "google",
+  "oauth_provider": "oauth:google",
   "external_id": "user@example.com",
   "wa_id": null,
   "tenant_id": null,
@@ -340,7 +360,7 @@ Initiate a Stripe payment intent for purchasing credits.
 **Request:**
 ```json
 {
-  "oauth_provider": "google",
+  "oauth_provider": "oauth:google",
   "external_id": "user@example.com",
   "customer_email": "user@example.com"
 }
@@ -524,10 +544,13 @@ class BillingClient:
             response = await client.post(
                 f"{self.base_url}/v1/billing/credits/check",
                 json={
-                    "oauth_provider": "google",
+                    "oauth_provider": "oauth:google",
                     "external_id": user_email,
                     "amount_minor": amount_minor,
-                    "context": "ai_operation"
+                    "context": {
+                        "agent_id": "my_agent",
+                        "request_id": f"req_{int(time.time())}"
+                    }
                 },
                 headers=self.headers
             )
@@ -546,7 +569,7 @@ class BillingClient:
             response = await client.post(
                 f"{self.base_url}/v1/billing/charges",
                 json={
-                    "oauth_provider": "google",
+                    "oauth_provider": "oauth:google",
                     "external_id": user_email,
                     "amount_minor": amount_minor,
                     "currency": "USD",
@@ -560,9 +583,11 @@ class BillingClient:
 
     async def get_account(self, user_email: str) -> dict:
         """Get account balance and details"""
+        from urllib.parse import quote
         async with httpx.AsyncClient() as client:
+            provider = quote("oauth:google")  # URL-encode oauth:google -> oauth%3Agoogle
             response = await client.get(
-                f"{self.base_url}/v1/billing/accounts/google/{user_email}",
+                f"{self.base_url}/v1/billing/accounts/{provider}/{user_email}",
                 headers=self.headers
             )
             response.raise_for_status()
