@@ -352,11 +352,15 @@ function renderAPIKeys() {
 }
 
 function showCreateKeyDialog() {
-    document.getElementById('create-key-modal').classList.remove('hidden');
+    const modal = document.getElementById('create-key-modal');
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
 }
 
 function hideCreateKeyDialog() {
-    document.getElementById('create-key-modal').classList.add('hidden');
+    const modal = document.getElementById('create-key-modal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
     document.getElementById('create-key-form').reset();
 }
 
@@ -390,15 +394,19 @@ async function createAPIKey(event) {
 }
 
 function showGeneratedKey(keyData) {
-    document.getElementById('generated-key').value = keyData.api_key;
+    document.getElementById('generated-key').value = keyData.plaintext_key;
     document.getElementById('key-modal-name').textContent = keyData.name;
     document.getElementById('key-modal-env').textContent = keyData.environment;
     document.getElementById('key-modal-perms').textContent = keyData.permissions.join(', ');
-    document.getElementById('show-key-modal').classList.remove('hidden');
+    const modal = document.getElementById('show-key-modal');
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
 }
 
 function hideShowKeyDialog() {
-    document.getElementById('show-key-modal').classList.add('hidden');
+    const modal = document.getElementById('show-key-modal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
 }
 
 function copyAPIKey() {
