@@ -7,10 +7,10 @@ NO DICTIONARIES - All columns use Mapped[] type annotations.
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, CheckConstraint, String, DateTime, Index, UniqueConstraint, Text, Boolean, ARRAY
+from sqlalchemy import BigInteger, CheckConstraint, String, DateTime, ForeignKey, Index, UniqueConstraint, Text, Boolean, ARRAY
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, INET, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.models.api import AccountStatus, TransactionType
 
@@ -325,9 +325,14 @@ class APIKey(Base):
     )
 
     # Ownership
-    created_by: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False, index=True
+    created_by_id: Mapped[UUID] = mapped_column(
+        "created_by",
+        PG_UUID(as_uuid=True),
+        ForeignKey("admin_users.id"),
+        nullable=False,
+        index=True
     )
+    created_by: Mapped["AdminUser"] = relationship("AdminUser", lazy="selectin")
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

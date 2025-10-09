@@ -395,7 +395,7 @@ async def create_api_key(
     try:
         api_key_data = await api_key_service.create_api_key(
             name=request.name,
-            created_by=admin.id,
+            created_by=admin.id,  # Service expects 'created_by' parameter
             environment=request.environment,
             permissions=request.permissions,
             expires_in_days=request.expires_in_days,

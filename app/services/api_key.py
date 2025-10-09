@@ -144,10 +144,9 @@ class APIKeyService:
             description=description,
             environment=environment,
             permissions=permissions,
-            created_by=created_by,
+            created_by_id=created_by,
             expires_at=expires_at,
             status="active",
-            metadata={},
         )
 
         self.db.add(api_key)
