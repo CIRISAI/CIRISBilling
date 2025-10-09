@@ -50,12 +50,17 @@ async def google_login(
     Returns:
         Redirect to Google OAuth consent screen
     """
+    # Get the actual scheme (http or https) from proxy headers
+    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+    host = request.headers.get("Host", request.url.hostname)
+    base_url = f"{scheme}://{host}"
+
     # Default redirect to admin UI
     if not redirect_uri:
-        redirect_uri = str(request.base_url).rstrip("/") + "/admin"
+        redirect_uri = f"{base_url}/admin"
 
     # Build callback URL (where Google will redirect back to)
-    callback_url = str(request.base_url).rstrip("/") + "/admin/oauth/callback"
+    callback_url = f"{base_url}/admin/oauth/callback"
 
     try:
         state, auth_url = await auth_service.initiate_oauth_flow(
@@ -66,6 +71,9 @@ async def google_login(
             "oauth_login_initiated",
             state=state[:8],
             redirect_uri=redirect_uri,
+            callback_url=callback_url,
+            request_scheme=request.url.scheme,
+            base_url=str(request.base_url),
         )
 
         return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
