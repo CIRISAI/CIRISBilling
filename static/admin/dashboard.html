@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIRIS Billing Admin</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .tab-active {
+            border-color: #3b82f6;
+            color: #3b82f6;
+        }
+        .api-key-mono {
+            font-family: 'Courier New', monospace;
+            background: #f3f4f6;
+            padding: 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.875rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Main App -->
+    <div id="app">
+        <!-- Header -->
+        <header class="bg-white shadow">
+            <div class="container mx-auto px-6 py-4">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h1 class="text-3xl font-bold text-gray-900">CIRIS Billing Admin</h1>
+                        <p class="text-gray-600 mt-1">Manage billing, users, and system configuration</p>
+                    </div>
+                    <div class="flex gap-2 items-center">
+                        <div class="text-right mr-4">
+                            <p class="text-sm font-medium text-gray-900" id="admin-name">Admin User</p>
+                            <p class="text-xs text-gray-600" id="admin-role">Viewer</p>
+                        </div>
+                        <button onclick="refreshData()" class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2">
+                            <i class="fas fa-sync-alt" id="refresh-icon"></i>
+                            Refresh
+                        </button>
+                        <button onclick="logout()" class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2">
+                            <i class="fas fa-sign-out-alt"></i>
+                            Logout
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Container -->
+        <div class="container mx-auto p-6">
+            <!-- Error Alert -->
+            <div id="error-alert" class="hidden mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+                <span id="error-message"></span>
+            </div>
+
+            <!-- Success Alert -->
+            <div id="success-alert" class="hidden mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">
+                <span id="success-message"></span>
+            </div>
+
+            <!-- Tabs -->
+            <div class="bg-white rounded-lg shadow">
+                <div class="border-b">
+                    <nav class="flex space-x-8 px-6" aria-label="Tabs">
+                        <button onclick="switchTab('dashboard')" id="dashboard-tab" class="py-4 px-1 border-b-2 font-medium text-sm tab-active">
+                            <i class="fas fa-chart-line mr-2"></i>Dashboard
+                        </button>
+                        <button onclick="switchTab('users')" id="users-tab" class="py-4 px-1 border-b-2 font-medium text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-users mr-2"></i>Users
+                        </button>
+                        <button onclick="switchTab('api-keys')" id="api-keys-tab" class="py-4 px-1 border-b-2 font-medium text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-key mr-2"></i>API Keys
+                        </button>
+                        <button onclick="switchTab('analytics')" id="analytics-tab" class="py-4 px-1 border-b-2 font-medium text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-chart-bar mr-2"></i>Analytics
+                        </button>
+                        <button onclick="switchTab('config')" id="config-tab" class="py-4 px-1 border-b-2 font-medium text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-cog mr-2"></i>Configuration
+                        </button>
+                    </nav>
+                </div>
+
+                <!-- Tab Content -->
+                <div class="p-6">
+                    <!-- Dashboard Tab -->
+                    <div id="dashboard-content">
+                        <!-- Metrics Cards -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                            <div class="bg-blue-50 p-6 rounded-lg border border-blue-200">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <p class="text-sm font-medium text-blue-700">Total Users</p>
+                                        <p class="text-3xl font-bold text-blue-900" id="total-users">-</p>
+                                        <p class="text-xs text-blue-600 mt-1" id="users-change">-</p>
+                                    </div>
+                                    <i class="fas fa-users text-4xl text-blue-400"></i>
+                                </div>
+                            </div>
+                            <div class="bg-green-50 p-6 rounded-lg border border-green-200">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <p class="text-sm font-medium text-green-700">Revenue Today</p>
+                                        <p class="text-3xl font-bold text-green-900" id="revenue-today">-</p>
+                                        <p class="text-xs text-green-600 mt-1" id="revenue-change">-</p>
+                                    </div>
+                                    <i class="fas fa-dollar-sign text-4xl text-green-400"></i>
+                                </div>
+                            </div>
+                            <div class="bg-purple-50 p-6 rounded-lg border border-purple-200">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <p class="text-sm font-medium text-purple-700">Active Today</p>
+                                        <p class="text-3xl font-bold text-purple-900" id="active-today">-</p>
+                                        <p class="text-xs text-purple-600 mt-1" id="active-change">-</p>
+                                    </div>
+                                    <i class="fas fa-bolt text-4xl text-purple-400"></i>
+                                </div>
+                            </div>
+                            <div class="bg-orange-50 p-6 rounded-lg border border-orange-200">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <p class="text-sm font-medium text-orange-700">Total Charges</p>
+                                        <p class="text-3xl font-bold text-orange-900" id="total-charges">-</p>
+                                        <p class="text-xs text-orange-600 mt-1" id="charges-change">-</p>
+                                    </div>
+                                    <i class="fas fa-receipt text-4xl text-orange-400"></i>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Revenue Chart Placeholder -->
+                        <div class="bg-gray-50 p-6 rounded-lg border mb-6">
+                            <h3 class="text-lg font-semibold mb-4">Revenue (Last 30 Days)</h3>
+                            <div class="h-64 flex items-center justify-center text-gray-400">
+                                <p>Chart visualization will be added here (using Chart.js or similar)</p>
+                            </div>
+                        </div>
+
+                        <!-- Recent Activity -->
+                        <div class="bg-gray-50 p-6 rounded-lg border">
+                            <h3 class="text-lg font-semibold mb-4">Recent Activity</h3>
+                            <div id="recent-activity" class="space-y-2">
+                                <p class="text-gray-500 text-sm">Loading...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Users Tab -->
+                    <div id="users-content" class="hidden">
+                        <div class="mb-4 flex justify-between items-center">
+                            <div>
+                                <h2 class="text-xl font-semibold">User Management</h2>
+                                <p class="text-gray-600"><span id="user-count">0</span> total users</p>
+                            </div>
+                            <div class="flex gap-2">
+                                <input type="text" id="user-search" placeholder="Search users..."
+                                       class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                       onkeyup="filterUsers()">
+                                <select id="status-filter" class="px-4 py-2 border border-gray-300 rounded-lg" onchange="filterUsers()">
+                                    <option value="">All Statuses</option>
+                                    <option value="active">Active</option>
+                                    <option value="suspended">Suspended</option>
+                                    <option value="closed">Closed</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="users-table" class="overflow-x-auto">
+                            <!-- Users table will be populated here -->
+                        </div>
+                    </div>
+
+                    <!-- API Keys Tab -->
+                    <div id="api-keys-content" class="hidden">
+                        <div class="mb-4 flex justify-between items-center">
+                            <div>
+                                <h2 class="text-xl font-semibold">API Key Management</h2>
+                                <p class="text-gray-600"><span id="api-key-count">0</span> active keys</p>
+                            </div>
+                            <button onclick="showCreateKeyDialog()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2">
+                                <i class="fas fa-plus"></i>
+                                Create API Key
+                            </button>
+                        </div>
+                        <div id="api-keys-list" class="space-y-4">
+                            <!-- API keys will be populated here -->
+                        </div>
+                    </div>
+
+                    <!-- Analytics Tab -->
+                    <div id="analytics-content" class="hidden">
+                        <div class="mb-4">
+                            <h2 class="text-xl font-semibold">Analytics & Reports</h2>
+                            <div class="flex gap-2 mt-4">
+                                <button onclick="switchAnalyticsView('daily')" id="daily-btn"
+                                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Daily</button>
+                                <button onclick="switchAnalyticsView('weekly')" id="weekly-btn"
+                                        class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">Weekly</button>
+                                <button onclick="switchAnalyticsView('monthly')" id="monthly-btn"
+                                        class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">Monthly</button>
+                                <button onclick="switchAnalyticsView('all-time')" id="all-time-btn"
+                                        class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">All Time</button>
+                            </div>
+                        </div>
+                        <div id="analytics-data" class="space-y-6">
+                            <!-- Analytics data will be populated here -->
+                        </div>
+                    </div>
+
+                    <!-- Configuration Tab -->
+                    <div id="config-content" class="hidden">
+                        <div class="space-y-6">
+                            <!-- Billing Settings -->
+                            <div class="bg-white p-6 rounded-lg border">
+                                <h3 class="text-lg font-semibold mb-4">Billing Settings</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Free Uses Per Account</label>
+                                        <input type="number" id="free-uses" value="3" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Paid Uses Per Purchase</label>
+                                        <input type="number" id="paid-uses" value="20" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Price Per Purchase (cents)</label>
+                                        <input type="number" id="price-cents" value="500" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Currency</label>
+                                        <select id="currency" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                            <option value="USD">USD</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <button onclick="saveBillingConfig()" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                                    Save Billing Settings
+                                </button>
+                            </div>
+
+                            <!-- Stripe Configuration -->
+                            <div class="bg-white p-6 rounded-lg border">
+                                <h3 class="text-lg font-semibold mb-4">Stripe Configuration</h3>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Publishable Key</label>
+                                        <input type="text" id="stripe-pub-key" placeholder="pk_live_..."
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Secret Key</label>
+                                        <input type="password" id="stripe-secret-key" placeholder="sk_live_..."
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Webhook Secret</label>
+                                        <input type="password" id="stripe-webhook-secret" placeholder="whsec_..."
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                    </div>
+                                </div>
+                                <button onclick="saveStripeConfig()" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                                    Save Stripe Configuration
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create API Key Modal -->
+    <div id="create-key-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white p-8 rounded-lg shadow-xl max-w-md w-full">
+            <h2 class="text-2xl font-bold mb-4">Create API Key</h2>
+            <form id="create-key-form" onsubmit="createAPIKey(event)">
+                <div class="mb-4">
+                    <label class="block text-gray-700 mb-2">Key Name</label>
+                    <input type="text" id="key-name" required placeholder="Production Agent"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-gray-700 mb-2">Description</label>
+                    <textarea id="key-description" rows="2" placeholder="Main production instance"
+                              class="w-full px-4 py-2 border border-gray-300 rounded-lg"></textarea>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-gray-700 mb-2">Environment</label>
+                    <select id="key-environment" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                        <option value="test">Test</option>
+                        <option value="live">Live</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-gray-700 mb-2">Expires In (days)</label>
+                    <input type="number" id="key-expires" placeholder="90 (leave empty for no expiration)"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                </div>
+                <div class="flex gap-2">
+                    <button type="button" onclick="hideCreateKeyDialog()"
+                            class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">Cancel</button>
+                    <button type="submit" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Show API Key Modal -->
+    <div id="show-key-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white p-8 rounded-lg shadow-xl max-w-2xl w-full">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-2xl font-bold text-red-600">⚠️ Save This API Key</h2>
+                <button onclick="hideShowKeyDialog()" class="text-gray-400 hover:text-gray-600">
+                    <i class="fas fa-times text-2xl"></i>
+                </button>
+            </div>
+            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+                <p class="text-sm text-yellow-700">This key will only be shown once. Please copy and save it securely.</p>
+            </div>
+            <div class="mb-4">
+                <label class="block text-gray-700 mb-2 font-semibold">API Key</label>
+                <div class="flex gap-2">
+                    <input type="text" id="generated-key" readonly
+                           class="flex-1 api-key-mono border border-gray-300 rounded-lg cursor-text">
+                    <button onclick="copyAPIKey()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                </div>
+            </div>
+            <div class="bg-gray-50 p-4 rounded-lg mb-4">
+                <p class="text-sm text-gray-600"><strong>Key Name:</strong> <span id="key-modal-name"></span></p>
+                <p class="text-sm text-gray-600"><strong>Environment:</strong> <span id="key-modal-env"></span></p>
+                <p class="text-sm text-gray-600"><strong>Permissions:</strong> <span id="key-modal-perms"></span></p>
+            </div>
+            <button onclick="hideShowKeyDialog()" class="w-full px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">
+                I've Saved It
+            </button>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
