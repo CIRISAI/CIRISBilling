@@ -204,12 +204,12 @@ async function refreshData() {
 
 async function loadDashboard() {
     try {
-        const stats = await apiRequest('/admin/stats');
+        const stats = await apiRequest('/admin/analytics/overview');
 
         document.getElementById('total-users').textContent = stats.total_users.toLocaleString();
-        document.getElementById('active-users').textContent = stats.active_accounts.toLocaleString();
-        document.getElementById('total-revenue').textContent = formatMoney(stats.total_revenue_minor);
-        document.getElementById('total-charges').textContent = stats.total_charges.toLocaleString();
+        document.getElementById('active-users').textContent = stats.active_users.toLocaleString();
+        document.getElementById('total-revenue').textContent = formatMoney(stats.total_charged_all_time);
+        document.getElementById('total-charges').textContent = stats.charges_last_24h.toLocaleString();
 
     } catch (error) {
         console.error('Dashboard load error:', error);
@@ -227,8 +227,8 @@ async function loadDashboard() {
 
 async function loadUsers() {
     try {
-        const data = await apiRequest('/admin/accounts');
-        users = data.accounts || [];
+        const data = await apiRequest('/admin/users');
+        users = data.users || [];
         renderUsers();
 
     } catch (error) {
@@ -250,17 +250,18 @@ function renderUsers() {
         <div class="bg-white p-4 rounded-lg border">
             <div class="flex justify-between items-start">
                 <div>
-                    <h3 class="text-lg font-semibold">${user.email}</h3>
+                    <h3 class="text-lg font-semibold">${user.external_id} (${user.oauth_provider})</h3>
                     <div class="mt-2 text-sm text-gray-600">
-                        <p><strong>Credits:</strong> ${user.credits_remaining}</p>
-                        <p><strong>Free Uses:</strong> ${user.free_uses_remaining}</p>
-                        <p><strong>Total Uses:</strong> ${user.total_uses}</p>
+                        <p><strong>Balance:</strong> ${formatMoney(user.balance_minor)}</p>
+                        <p><strong>Plan:</strong> ${user.plan_name}</p>
+                        <p><strong>Total Charged:</strong> ${formatMoney(user.total_charged)}</p>
+                        <p><strong>Total Credited:</strong> ${formatMoney(user.total_credited)}</p>
                         <p><strong>Status:</strong> <span class="px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(user.status)}">${user.status}</span></p>
                         <p><strong>Created:</strong> ${formatDate(user.created_at)}</p>
                     </div>
                 </div>
                 <div>
-                    <button onclick="viewUserDetails('${user.id}')"
+                    <button onclick="viewUserDetails('${user.account_id}')"
                             class="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">
                         View Details
                     </button>
@@ -274,8 +275,8 @@ function renderUsers() {
 
 async function viewUserDetails(userId) {
     try {
-        const user = await apiRequest(`/admin/accounts/${userId}`);
-        alert(`User: ${user.email}\nCredits: ${user.credits_remaining}\nStatus: ${user.status}`);
+        const user = await apiRequest(`/admin/users/${userId}`);
+        alert(`User: ${user.external_id}\nBalance: ${formatMoney(user.balance_minor)}\nStatus: ${user.status}\nPlan: ${user.plan_name}`);
     } catch (error) {
         showError('Failed to load user details');
     }
@@ -511,13 +512,10 @@ function renderAnalytics(data, view) {
 
 async function loadConfig() {
     try {
-        const data = await apiRequest('/admin/config/billing');
-
-        document.getElementById('free-uses').value = data.pricing.free_uses_per_account;
-        document.getElementById('paid-uses').value = data.pricing.paid_uses_per_purchase;
-        document.getElementById('price-cents').value = data.pricing.price_per_purchase_minor;
-        document.getElementById('currency').value = data.pricing.currency;
-
+        // TODO: Implement /admin/config/billing endpoint
+        // For now, show placeholder message
+        console.log('Config endpoint not yet implemented');
+        // Leave default values
     } catch (error) {
         console.error('Config load error:', error);
         // Leave default values
@@ -548,7 +546,7 @@ async function saveBillingConfig() {
 }
 
 async function saveStripeConfig() {
-    const config = {
+    const configData = {
         api_key: document.getElementById('stripe-secret-key').value,
         webhook_secret: document.getElementById('stripe-webhook-secret').value,
         publishable_key: document.getElementById('stripe-pub-key').value
@@ -557,7 +555,9 @@ async function saveStripeConfig() {
     try {
         await apiRequest('/admin/config/providers/stripe', {
             method: 'PUT',
-            body: JSON.stringify(config)
+            body: JSON.stringify({
+                config_data: configData
+            })
         });
 
         showSuccess('Stripe configuration saved');
