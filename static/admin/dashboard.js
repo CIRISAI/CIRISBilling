@@ -126,7 +126,7 @@ function switchTab(tabName) {
 
     // Show/hide tab content
     tabs.forEach(tab => {
-        const content = document.getElementById(`${tab}-tab`);
+        const content = document.getElementById(`${tab}-content`);
         if (content) {
             if (tab === tabName) {
                 content.classList.remove('hidden');
@@ -207,17 +207,21 @@ async function loadDashboard() {
         const stats = await apiRequest('/admin/analytics/overview');
 
         document.getElementById('total-users').textContent = stats.total_users.toLocaleString();
-        document.getElementById('active-users').textContent = stats.active_users.toLocaleString();
-        document.getElementById('total-revenue').textContent = formatMoney(stats.total_charged_all_time);
+        document.getElementById('active-today').textContent = stats.active_users.toLocaleString();
+        document.getElementById('revenue-today').textContent = formatMoney(stats.total_charged_all_time);
         document.getElementById('total-charges').textContent = stats.charges_last_24h.toLocaleString();
 
     } catch (error) {
         console.error('Dashboard load error:', error);
-        // Set placeholder values
-        document.getElementById('total-users').textContent = '-';
-        document.getElementById('active-users').textContent = '-';
-        document.getElementById('total-revenue').textContent = '-';
-        document.getElementById('total-charges').textContent = '-';
+        // Set placeholder values on error
+        const safeSet = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+        safeSet('total-users', '-');
+        safeSet('active-today', '-');
+        safeSet('revenue-today', '-');
+        safeSet('total-charges', '-');
     }
 }
 
