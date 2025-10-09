@@ -19,20 +19,28 @@ from app.services.google_oauth import GoogleOAuthProvider
 logger = get_logger(__name__)
 router = APIRouter(prefix="/admin/oauth", tags=["admin-auth"])
 
+# Singleton admin auth service instance (shared across all requests)
+_admin_auth_service: Optional[AdminAuthService] = None
+
 
 def get_admin_auth_service() -> AdminAuthService:
-    """Get admin auth service instance."""
-    settings = get_settings()
-    oauth_provider = GoogleOAuthProvider(
-        client_id=settings.GOOGLE_CLIENT_ID,
-        client_secret=settings.GOOGLE_CLIENT_SECRET,
-        hd_domain="ciris.ai",
-    )
-    return AdminAuthService(
-        oauth_provider=oauth_provider,
-        jwt_secret=settings.ADMIN_JWT_SECRET,
-        jwt_expire_hours=24,
-    )
+    """Get admin auth service singleton instance."""
+    global _admin_auth_service
+
+    if _admin_auth_service is None:
+        settings = get_settings()
+        oauth_provider = GoogleOAuthProvider(
+            client_id=settings.GOOGLE_CLIENT_ID,
+            client_secret=settings.GOOGLE_CLIENT_SECRET,
+            hd_domain="ciris.ai",
+        )
+        _admin_auth_service = AdminAuthService(
+            oauth_provider=oauth_provider,
+            jwt_secret=settings.ADMIN_JWT_SECRET,
+            jwt_expire_hours=24,
+        )
+
+    return _admin_auth_service
 
 
 @router.get("/login")

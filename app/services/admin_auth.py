@@ -54,7 +54,7 @@ class AdminAuthService:
         self._sessions[state] = session
         auth_url = await self.oauth_provider.get_authorization_url(state, callback_url)
 
-        logger.info("oauth_flow_initiated", state=state[:8])
+        logger.info("oauth_flow_initiated", state=state[:8], callback_url=callback_url, auth_url_preview=auth_url[:150])
         return state, auth_url
 
     async def handle_oauth_callback(
