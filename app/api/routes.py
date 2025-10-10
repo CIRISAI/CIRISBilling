@@ -254,12 +254,24 @@ async def create_purchase(
     from app.config import settings
     from app.exceptions import PaymentProviderError
     from app.services.payment_provider import PaymentIntent
+    from app.services.provider_config import ProviderConfigService
     from app.services.stripe_provider import StripeProvider
 
     service = BillingService(db)
+
+    # Load Stripe config from database
+    config_service = ProviderConfigService(db)
+    stripe_config = await config_service.get_stripe_config()
+
+    if not stripe_config or not stripe_config["api_key"]:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment provider not configured",
+        )
+
     stripe_provider = StripeProvider(
-        api_key=settings.stripe_api_key,
-        webhook_secret=settings.stripe_webhook_secret,
+        api_key=stripe_config["api_key"],
+        webhook_secret=stripe_config["webhook_secret"],
     )
 
     identity = AccountIdentity(
@@ -335,11 +347,22 @@ async def get_purchase_status(
     """
     from app.config import settings
     from app.exceptions import PaymentProviderError
+    from app.services.provider_config import ProviderConfigService
     from app.services.stripe_provider import StripeProvider
 
+    # Load Stripe config from database
+    config_service = ProviderConfigService(db)
+    stripe_config = await config_service.get_stripe_config()
+
+    if not stripe_config or not stripe_config["api_key"]:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment provider not configured",
+        )
+
     stripe_provider = StripeProvider(
-        api_key=settings.stripe_api_key,
-        webhook_secret=settings.stripe_webhook_secret,
+        api_key=stripe_config["api_key"],
+        webhook_secret=stripe_config["webhook_secret"],
     )
 
     try:
@@ -488,14 +511,25 @@ async def stripe_webhook(
     """
     from app.config import settings
     from app.exceptions import PaymentProviderError, WebhookVerificationError
+    from app.services.provider_config import ProviderConfigService
     from app.services.stripe_provider import StripeProvider
     from structlog import get_logger
 
     logger = get_logger(__name__)
 
+    # Load Stripe config from database
+    config_service = ProviderConfigService(db)
+    stripe_config = await config_service.get_stripe_config()
+
+    if not stripe_config or not stripe_config["api_key"]:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment provider not configured",
+        )
+
     stripe_provider = StripeProvider(
-        api_key=settings.stripe_api_key,
-        webhook_secret=settings.stripe_webhook_secret,
+        api_key=stripe_config["api_key"],
+        webhook_secret=stripe_config["webhook_secret"],
     )
 
     # Read raw webhook payload
