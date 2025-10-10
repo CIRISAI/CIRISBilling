@@ -244,21 +244,68 @@
                             <!-- Stripe Configuration -->
                             <div class="bg-white p-6 rounded-lg border">
                                 <h3 class="text-lg font-semibold mb-4">Stripe Configuration</h3>
+
+                                <!-- Setup Instructions -->
+                                <div class="bg-blue-50 border-l-4 border-blue-400 p-4 mb-6">
+                                    <h4 class="text-md font-semibold text-blue-900 mb-2">📋 Stripe Setup Instructions</h4>
+                                    <div class="text-sm text-blue-800 space-y-3">
+                                        <div>
+                                            <p class="font-semibold mb-1">🧪 FOR QA/TEST ENVIRONMENT:</p>
+                                            <ol class="list-decimal list-inside space-y-1 ml-2">
+                                                <li>Go to <a href="https://dashboard.stripe.com/test/apikeys" target="_blank" class="underline">Test API Keys</a></li>
+                                                <li>Copy your <strong>Publishable key</strong> (starts with <code class="bg-blue-100 px-1 rounded">pk_test_</code>)</li>
+                                                <li>Reveal and copy your <strong>Secret key</strong> (starts with <code class="bg-blue-100 px-1 rounded">sk_test_</code>)</li>
+                                                <li>Go to <a href="https://dashboard.stripe.com/test/webhooks" target="_blank" class="underline">Test Webhooks</a></li>
+                                                <li>Click "+ Add endpoint" and set URL to: <code class="bg-blue-100 px-1 rounded">https://billing.ciris.ai/v1/billing/webhooks/stripe</code></li>
+                                                <li>Select events: <code class="bg-blue-100 px-1 rounded">payment_intent.succeeded</code>, <code class="bg-blue-100 px-1 rounded">payment_intent.payment_failed</code></li>
+                                                <li>Save and reveal your <strong>Signing secret</strong> (starts with <code class="bg-blue-100 px-1 rounded">whsec_</code>)</li>
+                                            </ol>
+                                        </div>
+
+                                        <div class="border-t border-blue-200 pt-3">
+                                            <p class="font-semibold mb-1">🚀 FOR LIVE/PRODUCTION ENVIRONMENT:</p>
+                                            <ol class="list-decimal list-inside space-y-1 ml-2">
+                                                <li>Go to <a href="https://dashboard.stripe.com/apikeys" target="_blank" class="underline">Live API Keys</a></li>
+                                                <li>Copy your <strong>Publishable key</strong> (starts with <code class="bg-blue-100 px-1 rounded">pk_live_</code>)</li>
+                                                <li>Reveal and copy your <strong>Secret key</strong> (starts with <code class="bg-blue-100 px-1 rounded">sk_live_</code>)</li>
+                                                <li>Go to <a href="https://dashboard.stripe.com/webhooks" target="_blank" class="underline">Live Webhooks</a></li>
+                                                <li>Click "+ Add endpoint" and set URL to: <code class="bg-blue-100 px-1 rounded">https://billing.ciris.ai/v1/billing/webhooks/stripe</code></li>
+                                                <li>Select events: <code class="bg-blue-100 px-1 rounded">payment_intent.succeeded</code>, <code class="bg-blue-100 px-1 rounded">payment_intent.payment_failed</code></li>
+                                                <li>Save and reveal your <strong>Signing secret</strong> (starts with <code class="bg-blue-100 px-1 rounded">whsec_</code>)</li>
+                                            </ol>
+                                        </div>
+
+                                        <div class="border-t border-blue-200 pt-3">
+                                            <p class="font-semibold mb-1">⚠️ Important Notes:</p>
+                                            <ul class="list-disc list-inside ml-2 space-y-1">
+                                                <li><strong>Never mix test and live keys!</strong> Always use matching sets.</li>
+                                                <li>Test keys are for development and QA only - no real money is charged.</li>
+                                                <li>Use Stripe test card: <code class="bg-blue-100 px-1 rounded">4242 4242 4242 4242</code> (any future expiry, any CVC)</li>
+                                                <li>Webhook must match environment: test webhook for test keys, live webhook for live keys.</li>
+                                                <li>Environment variables must be updated in <code class="bg-blue-100 px-1 rounded">.env</code> and service restarted.</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="space-y-4">
                                     <div>
                                         <label class="block text-sm font-medium text-gray-700 mb-2">Publishable Key</label>
-                                        <input type="text" id="stripe-pub-key" placeholder="pk_live_..."
-                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                        <input type="text" id="stripe-pub-key" placeholder="pk_test_... or pk_live_..."
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg font-mono text-sm">
+                                        <p class="text-xs text-gray-500 mt-1">Used for frontend Stripe.js integration</p>
                                     </div>
                                     <div>
                                         <label class="block text-sm font-medium text-gray-700 mb-2">Secret Key</label>
-                                        <input type="password" id="stripe-secret-key" placeholder="sk_live_..."
-                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                        <input type="password" id="stripe-secret-key" placeholder="sk_test_... or sk_live_..."
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg font-mono text-sm">
+                                        <p class="text-xs text-gray-500 mt-1">Server-side API key - never expose to frontend</p>
                                     </div>
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-2">Webhook Secret</label>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Webhook Signing Secret</label>
                                         <input type="password" id="stripe-webhook-secret" placeholder="whsec_..."
-                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg font-mono text-sm">
+                                        <p class="text-xs text-gray-500 mt-1">Verifies webhook events are from Stripe</p>
                                     </div>
                                 </div>
                                 <button onclick="saveStripeConfig()" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">

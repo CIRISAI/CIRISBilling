@@ -93,6 +93,47 @@ class StripeProvider:
             )
             raise PaymentProviderError(f"Stripe payment failed: {exc}") from exc
 
+    async def get_payment_status(self, payment_id: str) -> PaymentResult:
+        """
+        Get current status of a payment intent from Stripe.
+
+        Args:
+            payment_id: Stripe PaymentIntent ID
+
+        Returns:
+            PaymentResult with current status
+
+        Raises:
+            PaymentProviderError: If Stripe API call fails
+        """
+        try:
+            logger.info("getting_stripe_payment_status", payment_intent_id=payment_id)
+
+            payment_intent = stripe.PaymentIntent.retrieve(payment_id)
+
+            logger.info(
+                "stripe_payment_status_retrieved",
+                payment_intent_id=payment_id,
+                status=payment_intent.status,
+            )
+
+            return PaymentResult(
+                payment_id=payment_intent.id,
+                client_secret=payment_intent.client_secret,
+                status=payment_intent.status,
+                amount_minor=payment_intent.amount,
+                currency=payment_intent.currency.upper(),
+            )
+
+        except stripe.error.StripeError as exc:
+            logger.error(
+                "stripe_payment_status_failed",
+                payment_intent_id=payment_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise PaymentProviderError(f"Failed to get payment status: {exc}") from exc
+
     async def confirm_payment(self, payment_id: str) -> bool:
         """
         Confirm that a Stripe payment was successfully completed.

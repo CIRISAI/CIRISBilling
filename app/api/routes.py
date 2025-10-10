@@ -317,6 +317,50 @@ async def create_purchase(
         ) from exc
 
 
+@router.get(
+    "/v1/billing/purchases/{payment_id}",
+    response_model=PurchaseResponse,
+)
+async def get_purchase_status(
+    payment_id: str,
+    db: AsyncSession = Depends(get_read_db),
+    api_key: APIKeyData = Depends(require_permission("billing:read")),
+) -> PurchaseResponse:
+    """
+    Get status of a payment intent.
+
+    This allows polling the payment status after initiating a purchase.
+    Read operation - no database write needed.
+    Requires: API key with billing:read permission.
+    """
+    from app.config import settings
+    from app.exceptions import PaymentProviderError
+    from app.services.stripe_provider import StripeProvider
+
+    stripe_provider = StripeProvider(
+        api_key=settings.stripe_api_key,
+        webhook_secret=settings.stripe_webhook_secret,
+    )
+
+    try:
+        payment_result = await stripe_provider.get_payment_status(payment_id)
+
+        return PurchaseResponse(
+            payment_id=payment_result.payment_id,
+            client_secret=payment_result.client_secret,
+            amount_minor=payment_result.amount_minor,
+            currency=payment_result.currency,
+            uses_purchased=settings.paid_uses_per_purchase,
+            status=payment_result.status,
+        )
+
+    except PaymentProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Payment not found: {payment_id}",
+        ) from exc
+
+
 @router.post(
     "/v1/billing/accounts",
     response_model=AccountResponse,
