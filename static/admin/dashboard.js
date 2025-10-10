@@ -307,6 +307,9 @@ async function loadAPIKeys() {
         const data = await apiRequest('/admin/api/api-keys');
         apiKeys = data || [];  // API returns array directly, not {keys: [...]}
 
+        // Filter out revoked keys (keep active and rotating)
+        apiKeys = apiKeys.filter(key => key.status !== 'revoked');
+
         // Update count display
         const countEl = document.getElementById('api-key-count');
         if (countEl) countEl.textContent = apiKeys.length;
