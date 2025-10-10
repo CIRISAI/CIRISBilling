@@ -239,13 +239,13 @@ async function loadUsers() {
 
     } catch (error) {
         console.error('Users load error:', error);
-        document.getElementById('users-list').innerHTML =
+        document.getElementById('users-table').innerHTML =
             '<p class="text-red-500">Failed to load users. Admin endpoints may not be implemented yet.</p>';
     }
 }
 
 function renderUsers() {
-    const listDiv = document.getElementById('users-list');
+    const listDiv = document.getElementById('users-table');
 
     if (users.length === 0) {
         listDiv.innerHTML = '<p class="text-gray-500">No users found</p>';
