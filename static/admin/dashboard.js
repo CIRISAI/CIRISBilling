@@ -101,6 +101,11 @@ async function apiRequest(endpoint, options = {}) {
         throw new Error(error.detail || `HTTP ${response.status}`);
     }
 
+    // Handle 204 No Content - no response body
+    if (response.status === 204) {
+        return null;
+    }
+
     return response.json();
 }
 
@@ -206,7 +211,7 @@ async function refreshData() {
 
 async function loadDashboard() {
     try {
-        const stats = await apiRequest('/admin/api/analytics/overview');
+        const stats = await apiRequest('/admin/analytics/overview');
 
         document.getElementById('total-users').textContent = stats.total_users.toLocaleString();
         document.getElementById('active-today').textContent = stats.active_users.toLocaleString();
@@ -233,7 +238,7 @@ async function loadDashboard() {
 
 async function loadUsers() {
     try {
-        const data = await apiRequest('/admin/api/users');
+        const data = await apiRequest('/admin/users');
         users = data.users || [];
         renderUsers();
 
@@ -281,7 +286,7 @@ function renderUsers() {
 
 async function viewUserDetails(userId) {
     try {
-        const user = await apiRequest(`/admin/api/users/${userId}`);
+        const user = await apiRequest(`/admin/users/${userId}`);
         alert(`User: ${user.external_id}\nBalance: ${formatMoney(user.balance_minor)}\nStatus: ${user.status}\nPlan: ${user.plan_name}`);
     } catch (error) {
         showError('Failed to load user details');
@@ -294,7 +299,7 @@ async function viewUserDetails(userId) {
 
 async function loadAPIKeys() {
     try {
-        const data = await apiRequest('/admin/api/api-keys');
+        const data = await apiRequest('/admin/api-keys');
         apiKeys = data || [];  // API returns array directly, not {keys: [...]}
 
         // Update count display
@@ -378,7 +383,7 @@ async function createAPIKey(event) {
     const expiresIn = document.getElementById('key-expires').value;
 
     try {
-        const data = await apiRequest('/admin/api/api-keys', {
+        const data = await apiRequest('/admin/api-keys', {
             method: 'POST',
             body: JSON.stringify({
                 name,
@@ -427,7 +432,7 @@ async function rotateAPIKey(keyId) {
     }
 
     try {
-        const data = await apiRequest(`/admin/api/api-keys/${keyId}/rotate`, {
+        const data = await apiRequest(`/admin/api-keys/${keyId}/rotate`, {
             method: 'POST'
         });
 
@@ -447,7 +452,7 @@ async function revokeAPIKey(keyId) {
     }
 
     try {
-        await apiRequest(`/admin/api/api-keys/${keyId}`, {
+        await apiRequest(`/admin/api-keys/${keyId}`, {
             method: 'DELETE'
         });
 
@@ -551,7 +556,7 @@ async function saveBillingConfig() {
     };
 
     try {
-        await apiRequest('/admin/api/config/billing', {
+        await apiRequest('/admin/config/billing', {
             method: 'PUT',
             body: JSON.stringify(config)
         });
@@ -572,7 +577,7 @@ async function saveStripeConfig() {
     };
 
     try {
-        await apiRequest('/admin/api/config/providers/stripe', {
+        await apiRequest('/admin/config/providers/stripe', {
             method: 'PUT',
             body: JSON.stringify({
                 config_data: configData
