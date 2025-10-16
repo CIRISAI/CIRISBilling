@@ -51,6 +51,9 @@ class CreditCheckRequest(BaseModel):
     tenant_id: str | None = Field(None, max_length=255)
     context: CreditCheckContext = Field(default_factory=CreditCheckContext)
 
+    # User contact information
+    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
+
     # User metadata
     user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
     agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
@@ -281,6 +284,9 @@ class CreateAccountRequest(BaseModel):
     currency: str = Field(default="USD", min_length=3, max_length=3)
     plan_name: str = Field(default="free", min_length=1, max_length=100)
 
+    # User contact information
+    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
+
     # User metadata
     user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
     agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
@@ -312,6 +318,7 @@ class AccountResponse(BaseModel):
     external_id: str
     wa_id: str | None
     tenant_id: str | None
+    customer_email: str | None
     balance_minor: int
     currency: str
     plan_name: str

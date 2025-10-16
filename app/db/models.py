@@ -44,6 +44,9 @@ class Account(Base):
     wa_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Contact information
+    customer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # Balance
     balance_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")

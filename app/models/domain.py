@@ -96,6 +96,7 @@ class AccountData:
     external_id: str
     wa_id: str | None
     tenant_id: str | None
+    customer_email: str | None
     balance_minor: int
     currency: str
     plan_name: str
