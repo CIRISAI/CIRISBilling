@@ -28,7 +28,7 @@ logger = structlog.get_logger()
 QA_OAUTH_PROVIDER = "oauth:google"
 QA_EXTERNAL_ID = "999888777666555444"
 TARGET_FREE_USES = 3
-INACTIVITY_THRESHOLD_SECONDS = 30
+INACTIVITY_THRESHOLD_SECONDS = 300  # 5 minutes (was 30 seconds)
 
 
 async def get_qa_account(session: AsyncSession) -> Account | None:
