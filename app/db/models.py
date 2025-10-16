@@ -156,10 +156,8 @@ class Charge(Base):
 
     __table_args__ = (
         CheckConstraint("amount_minor > 0", name="ck_charge_amount_positive"),
-        CheckConstraint(
-            "balance_after = balance_before - amount_minor",
-            name="ck_charge_balance_consistency",
-        ),
+        # Note: balance_after doesn't always equal balance_before - amount_minor
+        # When using free tier, balance stays the same but a charge is still recorded
         UniqueConstraint("account_id", "idempotency_key", name="uq_charge_idempotency"),
         Index("idx_charges_created_at", "created_at"),
         Index(
