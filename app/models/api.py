@@ -112,6 +112,9 @@ class CreateChargeRequest(BaseModel):
     idempotency_key: str | None = Field(None, max_length=255)
     metadata: ChargeMetadata = Field(default_factory=ChargeMetadata)
 
+    # User contact information
+    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
+
     # User metadata
     user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
     agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
@@ -187,6 +190,9 @@ class AddCreditsRequest(BaseModel):
     transaction_type: TransactionType
     external_transaction_id: str | None = Field(None, max_length=255)
     idempotency_key: str | None = Field(None, max_length=255)
+
+    # User contact information
+    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
 
     # User metadata
     user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")

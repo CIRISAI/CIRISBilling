@@ -98,6 +98,17 @@ async def create_charge(
         tenant_id=request.tenant_id,
     )
 
+    # Update account metadata if provided
+    if any([request.customer_email, request.user_role, request.agent_id]):
+        await service.update_account_metadata(
+            identity=identity,
+            customer_email=request.customer_email,
+            marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
+            marketing_opt_in_source=request.marketing_opt_in_source,
+            user_role=request.user_role,
+            agent_id=request.agent_id,
+        )
+
     intent = ChargeIntent(
         account_identity=identity,
         amount_minor=request.amount_minor,
@@ -183,6 +194,17 @@ async def add_credits(
         wa_id=request.wa_id,
         tenant_id=request.tenant_id,
     )
+
+    # Update account metadata if provided
+    if any([request.customer_email, request.user_role, request.agent_id]):
+        await service.update_account_metadata(
+            identity=identity,
+            customer_email=request.customer_email,
+            marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
+            marketing_opt_in_source=request.marketing_opt_in_source,
+            user_role=request.user_role,
+            agent_id=request.agent_id,
+        )
 
     intent = CreditIntent(
         account_identity=identity,

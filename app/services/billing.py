@@ -449,6 +449,51 @@ class BillingService:
             raise AccountNotFoundError(identity)
         return self._account_to_domain(account)
 
+    async def update_account_metadata(
+        self,
+        identity: AccountIdentity,
+        customer_email: str | None = None,
+        marketing_opt_in: bool | None = None,
+        marketing_opt_in_source: str | None = None,
+        user_role: str | None = None,
+        agent_id: str | None = None,
+    ) -> None:
+        """
+        Update account metadata fields if provided.
+
+        Only updates fields that are not None.
+        """
+        from app.db.models import utc_now
+
+        account = await self._find_account_by_identity(identity)
+        if account is None:
+            return  # Account doesn't exist, nothing to update
+
+        updated = False
+
+        if customer_email is not None and account.customer_email != customer_email:
+            account.customer_email = customer_email
+            updated = True
+
+        if marketing_opt_in is not None and account.marketing_opt_in != marketing_opt_in:
+            account.marketing_opt_in = marketing_opt_in
+            account.marketing_opt_in_at = utc_now() if marketing_opt_in else None
+            if marketing_opt_in_source is not None:
+                account.marketing_opt_in_source = marketing_opt_in_source
+            updated = True
+
+        if user_role is not None and account.user_role != user_role:
+            account.user_role = user_role
+            updated = True
+
+        if agent_id is not None and account.agent_id != agent_id:
+            account.agent_id = agent_id
+            updated = True
+
+        if updated:
+            await self.session.flush()
+            await self.session.commit()
+
     async def add_purchased_uses(
         self,
         identity: AccountIdentity,
