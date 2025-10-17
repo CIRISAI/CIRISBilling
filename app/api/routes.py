@@ -340,6 +340,10 @@ async def create_purchase(
         ) from exc
 
     # Create payment intent with Stripe
+    # Use current timestamp for idempotency to allow multiple purchase attempts
+    from datetime import datetime, timezone
+    current_timestamp = int(datetime.now(timezone.utc).timestamp())
+
     payment_intent = PaymentIntent(
         amount_minor=settings.price_per_purchase_minor,
         currency="USD",
@@ -348,7 +352,7 @@ async def create_purchase(
         metadata_account_id=str(account_data.account_id),
         metadata_oauth_provider=request.oauth_provider,
         metadata_external_id=request.external_id,
-        idempotency_key=f"purchase-v2-{account_data.account_id}-{int(account_data.updated_at.timestamp())}",
+        idempotency_key=f"purchase-v3-{account_data.account_id}-{current_timestamp}",
     )
 
     try:
