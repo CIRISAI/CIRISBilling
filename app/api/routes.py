@@ -23,6 +23,7 @@ from app.exceptions import (
 from app.models.api import (
     AccountResponse,
     AddCreditsRequest,
+    ChargeMetadata,
     ChargeResponse,
     CreateAccountRequest,
     CreateChargeRequest,
@@ -32,6 +33,8 @@ from app.models.api import (
     HealthResponse,
     PurchaseRequest,
     PurchaseResponse,
+    TransactionItem,
+    TransactionListResponse,
 )
 from app.models.domain import AccountIdentity, ChargeIntent, CreditIntent
 from app.services.billing import BillingService
@@ -50,6 +53,7 @@ async def check_credit(
     Check if account has sufficient credits.
 
     Auto-creates new accounts with free credits on first check.
+    Updates account metadata if provided for existing accounts.
     Write operation - requires primary database.
     Requires: API key with billing:read permission.
     """
@@ -62,7 +66,8 @@ async def check_credit(
         tenant_id=request.tenant_id,
     )
 
-    return await service.check_credit(
+    # First check credit (creates account if needed)
+    result = await service.check_credit(
         identity,
         request.context,
         customer_email=request.customer_email,
@@ -71,6 +76,19 @@ async def check_credit(
         user_role=request.user_role,
         agent_id=request.agent_id,
     )
+
+    # Update account metadata if provided (for existing accounts)
+    # Always call update to ensure metadata is synced on every request
+    await service.update_account_metadata(
+        identity=identity,
+        customer_email=request.customer_email,
+        marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
+        marketing_opt_in_source=request.marketing_opt_in_source,
+        user_role=request.user_role,
+        agent_id=request.agent_id,
+    )
+
+    return result
 
 
 @router.post(
@@ -98,16 +116,15 @@ async def create_charge(
         tenant_id=request.tenant_id,
     )
 
-    # Update account metadata if provided
-    if any([request.customer_email, request.user_role, request.agent_id]):
-        await service.update_account_metadata(
-            identity=identity,
-            customer_email=request.customer_email,
-            marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
-            marketing_opt_in_source=request.marketing_opt_in_source,
-            user_role=request.user_role,
-            agent_id=request.agent_id,
-        )
+    # Update account metadata on every charge request
+    await service.update_account_metadata(
+        identity=identity,
+        customer_email=request.customer_email,
+        marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
+        marketing_opt_in_source=request.marketing_opt_in_source,
+        user_role=request.user_role,
+        agent_id=request.agent_id,
+    )
 
     intent = ChargeIntent(
         account_identity=identity,
@@ -195,16 +212,15 @@ async def add_credits(
         tenant_id=request.tenant_id,
     )
 
-    # Update account metadata if provided
-    if any([request.customer_email, request.user_role, request.agent_id]):
-        await service.update_account_metadata(
-            identity=identity,
-            customer_email=request.customer_email,
-            marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
-            marketing_opt_in_source=request.marketing_opt_in_source,
-            user_role=request.user_role,
-            agent_id=request.agent_id,
-        )
+    # Update account metadata on every credit request
+    await service.update_account_metadata(
+        identity=identity,
+        customer_email=request.customer_email,
+        marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
+        marketing_opt_in_source=request.marketing_opt_in_source,
+        user_role=request.user_role,
+        agent_id=request.agent_id,
+    )
 
     intent = CreditIntent(
         account_identity=identity,
@@ -330,6 +346,7 @@ async def create_purchase(
         description=f"Purchase {settings.paid_uses_per_purchase} uses",
         customer_email=request.customer_email,
         metadata_account_id=str(account_data.account_id),
+        metadata_oauth_provider=request.oauth_provider,
         metadata_external_id=request.external_id,
         idempotency_key=f"purchase-{account_data.account_id}-{int(account_data.updated_at.timestamp())}",
     )
@@ -344,6 +361,7 @@ async def create_purchase(
             currency=payment_result.currency,
             uses_purchased=settings.paid_uses_per_purchase,
             status=payment_result.status,
+            publishable_key=stripe_config["publishable_key"],
         )
 
     except PaymentProviderError as exc:
@@ -399,6 +417,7 @@ async def get_purchase_status(
             currency=payment_result.currency,
             uses_purchased=settings.paid_uses_per_purchase,
             status=payment_result.status,
+            publishable_key=stripe_config["publishable_key"],
         )
 
     except PaymentProviderError as exc:
@@ -577,7 +596,7 @@ async def stripe_webhook(
         # Handle payment success
         if webhook_event.event_type == "payment_intent.succeeded":
             # Extract account info from metadata
-            if not webhook_event.metadata_account_id:
+            if not webhook_event.metadata_account_id or not webhook_event.metadata_oauth_provider or not webhook_event.metadata_external_id:
                 logger.error("stripe_webhook_missing_metadata", event_id=webhook_event.event_id)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -588,18 +607,37 @@ async def stripe_webhook(
             payment_succeeded = await stripe_provider.confirm_payment(webhook_event.payment_id)
 
             if payment_succeeded:
-                # Add purchased uses to account
-                # For now, we need to reconstruct the account identity
-                # In production, you might store this in the payment metadata
-                logger.info(
-                    "stripe_payment_succeeded",
-                    payment_id=webhook_event.payment_id,
-                    account_id=webhook_event.metadata_account_id,
+                # Reconstruct account identity from metadata
+                identity = AccountIdentity(
+                    oauth_provider=webhook_event.metadata_oauth_provider,
+                    external_id=webhook_event.metadata_external_id,
+                    wa_id=None,
+                    tenant_id=None,
                 )
 
-                # Note: In a production system, you'd extract full account identity from metadata
-                # For now, this webhook confirms payment but credits are added via purchase endpoint
-                # or you'd need to store full identity in payment_intent metadata
+                # Add purchased uses to account
+                service = BillingService(db)
+                try:
+                    await service.add_purchased_uses(
+                        identity=identity,
+                        uses_to_add=settings.paid_uses_per_purchase,
+                        payment_id=webhook_event.payment_id,
+                        amount_paid_minor=webhook_event.amount_minor or settings.price_per_purchase_minor,
+                    )
+                    logger.info(
+                        "stripe_payment_credited",
+                        payment_id=webhook_event.payment_id,
+                        account_id=webhook_event.metadata_account_id,
+                        uses_added=settings.paid_uses_per_purchase,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "stripe_webhook_credit_failed",
+                        payment_id=webhook_event.payment_id,
+                        error=str(e),
+                    )
+                    # Don't raise - we confirmed the payment succeeded
+                    # The user will need manual credit adjustment
 
             return {"status": "success", "event_id": webhook_event.event_id}
 
@@ -634,6 +672,139 @@ async def stripe_webhook(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Webhook processing failed",
         ) from exc
+
+
+@router.get("/v1/billing/transactions", response_model=TransactionListResponse)
+async def list_transactions(
+    oauth_provider: str,
+    external_id: str,
+    wa_id: str | None = None,
+    tenant_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_read_db),
+    api_key: APIKeyData = Depends(require_permission("billing:read")),
+) -> TransactionListResponse:
+    """
+    List all transactions (charges and credits) for an account.
+
+    Returns a unified list of charges (debits) and credits sorted by timestamp.
+    Read operation - served from replica.
+    Requires: API key with billing:read permission.
+    """
+    from sqlalchemy import select, union_all
+    from app.db.models import Charge, Credit, Account
+
+    service = BillingService(db)
+
+    identity = AccountIdentity(
+        oauth_provider=oauth_provider,
+        external_id=external_id,
+        wa_id=wa_id,
+        tenant_id=tenant_id,
+    )
+
+    # Get account
+    try:
+        account_data = await service.get_account(identity)
+    except AccountNotFoundError:
+        # Account doesn't exist - return empty list
+        return TransactionListResponse(
+            transactions=[],
+            total_count=0,
+            has_more=False,
+        )
+
+    # Get charges (debits)
+    charges_stmt = (
+        select(
+            Charge.id.label("transaction_id"),
+            Charge.amount_minor,
+            Charge.currency,
+            Charge.description,
+            Charge.created_at,
+            Charge.balance_after,
+            Charge.metadata_message_id,
+            Charge.metadata_agent_id,
+            Charge.metadata_channel_id,
+            Charge.metadata_request_id,
+        )
+        .where(Charge.account_id == account_data.account_id)
+    )
+
+    charges_result = await db.execute(charges_stmt)
+    charges = charges_result.all()
+
+    # Get credits
+    credits_stmt = (
+        select(
+            Credit.id.label("transaction_id"),
+            Credit.amount_minor,
+            Credit.currency,
+            Credit.description,
+            Credit.created_at,
+            Credit.balance_after,
+            Credit.transaction_type,
+            Credit.external_transaction_id,
+        )
+        .where(Credit.account_id == account_data.account_id)
+    )
+
+    credits_result = await db.execute(credits_stmt)
+    credits = credits_result.all()
+
+    # Combine into transaction list
+    transactions = []
+
+    # Add charges (as negative amounts)
+    for charge in charges:
+        transactions.append(
+            TransactionItem(
+                transaction_id=charge.transaction_id,
+                type="charge",
+                amount_minor=-charge.amount_minor,  # Negative for debits
+                currency=charge.currency,
+                description=charge.description,
+                created_at=charge.created_at.isoformat(),
+                balance_after=charge.balance_after,
+                metadata=ChargeMetadata(
+                    message_id=charge.metadata_message_id,
+                    agent_id=charge.metadata_agent_id,
+                    channel_id=charge.metadata_channel_id,
+                    request_id=charge.metadata_request_id,
+                ),
+            )
+        )
+
+    # Add credits (as positive amounts)
+    for credit in credits:
+        transactions.append(
+            TransactionItem(
+                transaction_id=credit.transaction_id,
+                type="credit",
+                amount_minor=credit.amount_minor,  # Positive for credits
+                currency=credit.currency,
+                description=credit.description,
+                created_at=credit.created_at.isoformat(),
+                balance_after=credit.balance_after,
+                transaction_type=credit.transaction_type,
+                external_transaction_id=credit.external_transaction_id,
+            )
+        )
+
+    # Sort by created_at DESC
+    transactions.sort(key=lambda t: t.created_at, reverse=True)
+
+    # Apply pagination
+    total_count = len(transactions)
+    paginated_transactions = transactions[offset : offset + limit]
+    has_more = (offset + limit) < total_count
+
+    return TransactionListResponse(
+        transactions=paginated_transactions,
+        total_count=total_count,
+        has_more=has_more,
+    )
 
 
 @router.get("/health", response_model=HealthResponse)

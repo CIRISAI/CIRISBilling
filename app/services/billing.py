@@ -28,6 +28,7 @@ from app.models.api import (
     CreditCheckContext,
     CreditCheckResponse,
     CreditResponse,
+    TransactionType,
 )
 from app.models.domain import (
     AccountData,
@@ -464,16 +465,39 @@ class BillingService:
         Only updates fields that are not None.
         """
         from app.db.models import utc_now
+        from structlog import get_logger
+
+        logger = get_logger(__name__)
+        logger.info(
+            "update_account_metadata_called",
+            oauth_provider=identity.oauth_provider,
+            external_id=identity.external_id,
+            customer_email=customer_email,
+            marketing_opt_in=marketing_opt_in,
+            user_role=user_role,
+            agent_id=agent_id,
+        )
 
         account = await self._find_account_by_identity(identity)
         if account is None:
+            logger.warning("update_account_metadata_no_account", identity=str(identity))
             return  # Account doesn't exist, nothing to update
 
         updated = False
 
         if customer_email is not None and account.customer_email != customer_email:
+            logger.info(
+                "update_account_metadata_email_update",
+                old_email=account.customer_email,
+                new_email=customer_email,
+            )
             account.customer_email = customer_email
             updated = True
+        elif customer_email is not None:
+            logger.info(
+                "update_account_metadata_email_unchanged",
+                email=customer_email,
+            )
 
         if marketing_opt_in is not None and account.marketing_opt_in != marketing_opt_in:
             account.marketing_opt_in = marketing_opt_in
@@ -493,6 +517,17 @@ class BillingService:
         if updated:
             await self.session.flush()
             await self.session.commit()
+            logger.info(
+                "update_account_metadata_committed",
+                oauth_provider=identity.oauth_provider,
+                external_id=identity.external_id,
+            )
+        else:
+            logger.info(
+                "update_account_metadata_no_changes",
+                oauth_provider=identity.oauth_provider,
+                external_id=identity.external_id,
+            )
 
     async def add_purchased_uses(
         self,
@@ -524,10 +559,10 @@ class BillingService:
         if account is None:
             raise AccountNotFoundError(identity)
 
-        # Calculate credit amount based on uses purchased
-        # For now, 1 use = 1 credit (in minor units)
-        # This can be adjusted based on pricing model
-        credit_amount = uses_to_add
+        # Add the full payment amount as credits
+        # The amount paid ($5.00 = 500 cents) is added to balance
+        # This provides credits for usage (each use costs 1 cent)
+        credit_amount = amount_paid_minor
 
         # Add credits using existing add_credits method
         credit_intent = CreditIntent(
@@ -535,7 +570,7 @@ class BillingService:
             amount_minor=credit_amount,
             currency="USD",
             transaction_type=TransactionType.PURCHASE,
-            description=f"Purchase of {uses_to_add} uses via Stripe",
+            description=f"Purchased ${amount_paid_minor/100:.2f} ({uses_to_add} uses) via Stripe",
             external_transaction_id=payment_id,
             idempotency_key=f"stripe-{payment_id}",
         )
@@ -554,29 +589,31 @@ class BillingService:
     # ========================================================================
 
     async def _find_account_by_identity(self, identity: AccountIdentity) -> Account | None:
-        """Find account by identity fields."""
+        """
+        Find account by identity fields.
+
+        Primary match: oauth_provider + external_id (these uniquely identify a user)
+        Optional fields: wa_id and tenant_id are ignored for lookup
+        """
         stmt = select(Account).where(
             Account.oauth_provider == identity.oauth_provider,
             Account.external_id == identity.external_id,
-            Account.wa_id == identity.wa_id if identity.wa_id else Account.wa_id.is_(None),
-            Account.tenant_id == identity.tenant_id
-            if identity.tenant_id
-            else Account.tenant_id.is_(None),
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def _lock_account_for_update(self, identity: AccountIdentity) -> Account | None:
-        """Lock account row for update (SELECT FOR UPDATE)."""
+        """
+        Lock account row for update (SELECT FOR UPDATE).
+
+        Primary match: oauth_provider + external_id (these uniquely identify a user)
+        Optional fields: wa_id and tenant_id are ignored for lookup
+        """
         stmt = (
             select(Account)
             .where(
                 Account.oauth_provider == identity.oauth_provider,
                 Account.external_id == identity.external_id,
-                Account.wa_id == identity.wa_id if identity.wa_id else Account.wa_id.is_(None),
-                Account.tenant_id == identity.tenant_id
-                if identity.tenant_id
-                else Account.tenant_id.is_(None),
             )
             .with_for_update()
         )

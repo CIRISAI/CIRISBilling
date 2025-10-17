@@ -21,6 +21,7 @@ class PaymentIntent:
     description: str
     customer_email: str
     metadata_account_id: str
+    metadata_oauth_provider: str
     metadata_external_id: str
     idempotency_key: str
 
@@ -55,6 +56,8 @@ class WebhookEvent:
     amount_minor: int | None
     currency: str | None
     metadata_account_id: str | None
+    metadata_oauth_provider: str | None
+    metadata_external_id: str | None
 
 
 class PaymentProvider(Protocol):

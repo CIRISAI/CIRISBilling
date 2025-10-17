@@ -66,6 +66,7 @@ class StripeProvider:
                 receipt_email=intent.customer_email,
                 metadata={
                     "account_id": intent.metadata_account_id,
+                    "oauth_provider": intent.metadata_oauth_provider,
                     "external_id": intent.metadata_external_id,
                 },
                 idempotency_key=intent.idempotency_key,
@@ -207,6 +208,8 @@ class StripeProvider:
                 amount_minor=payment_intent.get("amount"),
                 currency=payment_intent.get("currency", "").upper() if payment_intent.get("currency") else None,
                 metadata_account_id=payment_intent.get("metadata", {}).get("account_id"),
+                metadata_oauth_provider=payment_intent.get("metadata", {}).get("oauth_provider"),
+                metadata_external_id=payment_intent.get("metadata", {}).get("external_id"),
             )
 
             return webhook_event
