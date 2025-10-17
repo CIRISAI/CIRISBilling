@@ -561,7 +561,7 @@ class BillingService:
 
         # Add the full payment amount as credits
         # The amount paid ($5.00 = 500 cents) is added to balance
-        # This provides credits for usage (each use costs 1 cent)
+        # This provides credits for usage (each use costs 25 cents, so 500 cents = 20 uses)
         credit_amount = amount_paid_minor
 
         # Add credits using existing add_credits method
