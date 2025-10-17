@@ -427,6 +427,27 @@ async def get_purchase_status(
         ) from exc
 
 
+@router.get(
+    "/v1/billing/purchases/{payment_id}/status",
+    response_model=PurchaseResponse,
+)
+async def get_purchase_status_alias(
+    payment_id: str,
+    db: AsyncSession = Depends(get_read_db),
+    api_key: APIKeyData = Depends(require_permission("billing:read")),
+) -> PurchaseResponse:
+    """
+    Get status of a payment intent (alias endpoint for agent compatibility).
+
+    This is an alias for GET /v1/billing/purchases/{payment_id} to support
+    the agent's expected endpoint pattern.
+    Read operation - no database write needed.
+    Requires: API key with billing:read permission.
+    """
+    # Delegate to the main endpoint
+    return await get_purchase_status(payment_id, db, api_key)
+
+
 @router.post(
     "/v1/billing/accounts",
     response_model=AccountResponse,

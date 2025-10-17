@@ -272,6 +272,58 @@ class PurchaseResponse(BaseModel):
     currency: str
     uses_purchased: int
     status: str
+    publishable_key: str
+
+
+# ============================================================================
+# Transaction Models (Unified Charges + Credits)
+# ============================================================================
+
+
+class TransactionItem(BaseModel):
+    """Single transaction in unified transaction list (charge or credit)."""
+
+    transaction_id: UUID
+    type: Literal["charge", "credit"]
+    amount_minor: int  # Negative for charges, positive for credits
+    currency: str
+    description: str
+    created_at: str  # ISO 8601 timestamp
+    balance_after: int
+
+    # Optional fields that may appear on credits
+    transaction_type: TransactionType | None = None  # For credits: purchase, grant, refund, adjustment
+    external_transaction_id: str | None = None  # For credits: Stripe payment ID, etc.
+
+    # Optional fields that may appear on charges
+    metadata: ChargeMetadata | None = None
+
+
+class TransactionListRequest(BaseModel):
+    """Query parameters for listing transactions."""
+
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+
+class TransactionListResponse(BaseModel):
+    """GET /v1/billing/transactions response."""
+
+    transactions: list[TransactionItem]
+    total_count: int
+    has_more: bool
 
 
 # ============================================================================

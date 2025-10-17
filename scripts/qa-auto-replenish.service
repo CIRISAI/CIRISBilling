@@ -1,0 +1,18 @@
+[Unit]
+Description=CIRIS Billing QA Auto-Replenish Service
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ciris/billing
+Environment="DATABASE_URL=postgresql+asyncpg://ciris:${POSTGRES_PASSWORD}@postgres:5432/ciris_billing"
+ExecStart=/usr/bin/docker compose -f /opt/ciris/billing/docker-compose.admin.yml exec -T billing-api python /app/scripts/qa_auto_replenish.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

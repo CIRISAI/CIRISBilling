@@ -11,7 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
@@ -37,6 +37,7 @@ class UserResponse(BaseModel):
     external_id: str
     wa_id: Optional[str]
     tenant_id: Optional[str]
+    customer_email: Optional[str]
     balance_minor: int
     currency: str
     plan_name: str
@@ -202,9 +203,18 @@ async def list_users(
     users = []
     for account in accounts:
         # Get charge stats
+        # Only count paid charges (where balance changed) - free uses don't count as "charged"
         charge_stmt = select(
             func.count(Charge.id).label("charge_count"),
-            func.coalesce(func.sum(Charge.amount_minor), 0).label("total_charged"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (Charge.balance_before != Charge.balance_after, Charge.amount_minor),
+                        else_=0
+                    )
+                ),
+                0
+            ).label("total_charged"),
             func.max(Charge.created_at).label("last_charge_at"),
         ).where(Charge.account_id == account.id)
 
@@ -228,6 +238,7 @@ async def list_users(
                 external_id=account.external_id,
                 wa_id=account.wa_id,
                 tenant_id=account.tenant_id,
+                customer_email=account.customer_email,
                 balance_minor=account.balance_minor,
                 currency=account.currency,
                 plan_name=account.plan_name,
@@ -283,9 +294,18 @@ async def get_user(
         )
 
     # Get charge stats
+    # Only count paid charges (where balance changed) - free uses don't count as "charged"
     charge_stmt = select(
         func.count(Charge.id).label("charge_count"),
-        func.coalesce(func.sum(Charge.amount_minor), 0).label("total_charged"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (Charge.balance_before != Charge.balance_after, Charge.amount_minor),
+                    else_=0
+                )
+            ),
+            0
+        ).label("total_charged"),
         func.max(Charge.created_at).label("last_charge_at"),
     ).where(Charge.account_id == account.id)
 
@@ -314,6 +334,7 @@ async def get_user(
         external_id=account.external_id,
         wa_id=account.wa_id,
         tenant_id=account.tenant_id,
+        customer_email=account.customer_email,
         balance_minor=account.balance_minor,
         currency=account.currency,
         plan_name=account.plan_name,
@@ -541,7 +562,18 @@ async def get_analytics_overview(
     total_balance_minor = total_balance_result.scalar_one()
 
     # All-time charges and credits
-    total_charged_stmt = select(func.coalesce(func.sum(Charge.amount_minor), 0))
+    # Only count paid charges (where balance changed) - free uses don't count as "charged"
+    total_charged_stmt = select(
+        func.coalesce(
+            func.sum(
+                case(
+                    (Charge.balance_before != Charge.balance_after, Charge.amount_minor),
+                    else_=0
+                )
+            ),
+            0
+        )
+    )
     total_charged_result = await db.execute(total_charged_stmt)
     total_charged_all_time = total_charged_result.scalar_one()
 
