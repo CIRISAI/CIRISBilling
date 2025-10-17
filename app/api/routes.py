@@ -348,7 +348,7 @@ async def create_purchase(
         metadata_account_id=str(account_data.account_id),
         metadata_oauth_provider=request.oauth_provider,
         metadata_external_id=request.external_id,
-        idempotency_key=f"purchase-{account_data.account_id}-{int(account_data.updated_at.timestamp())}",
+        idempotency_key=f"purchase-v2-{account_data.account_id}-{int(account_data.updated_at.timestamp())}",
     )
 
     try:
