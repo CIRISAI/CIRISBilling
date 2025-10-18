@@ -95,15 +95,15 @@ echo ""
 echo "Writing secret files..."
 
 echo "$DATABASE_URL" > "$SECRETS_DIR/database_url.txt"
-chmod 600 "$SECRETS_DIR/database_url.txt"
+chmod 644 "$SECRETS_DIR/database_url.txt"
 echo "✓ Created $SECRETS_DIR/database_url.txt"
 
 echo "$GOOGLE_CLIENT_SECRET" > "$SECRETS_DIR/google_client_secret.txt"
-chmod 600 "$SECRETS_DIR/google_client_secret.txt"
+chmod 644 "$SECRETS_DIR/google_client_secret.txt"
 echo "✓ Created $SECRETS_DIR/google_client_secret.txt"
 
 echo "$SECRET_KEY" > "$SECRETS_DIR/secret_key.txt"
-chmod 600 "$SECRETS_DIR/secret_key.txt"
+chmod 644 "$SECRETS_DIR/secret_key.txt"
 echo "✓ Created $SECRETS_DIR/secret_key.txt"
 
 # Generate encryption key for future use (if doesn't exist)
@@ -112,7 +112,7 @@ if [ ! -f "$SECRETS_DIR/encryption_key.txt" ]; then
     echo "Generating encryption key for future use..."
     if command -v python3 &> /dev/null; then
         python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > "$SECRETS_DIR/encryption_key.txt"
-        chmod 600 "$SECRETS_DIR/encryption_key.txt"
+        chmod 644 "$SECRETS_DIR/encryption_key.txt"
         echo "✓ Generated $SECRETS_DIR/encryption_key.txt"
     else
         echo "⚠ Python3 not available, skipping encryption key generation"

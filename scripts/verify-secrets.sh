@@ -62,10 +62,10 @@ else
     FAIL=1
 fi
 
-if docker exec ciris-billing-api test -f /run/secrets/secret_key; then
-    echo "✓ PASS: /run/secrets/secret_key exists"
+if docker exec ciris-billing-api test -f /run/secrets/admin_jwt_secret; then
+    echo "✓ PASS: /run/secrets/admin_jwt_secret exists"
 else
-    echo "❌ FAIL: /run/secrets/secret_key missing"
+    echo "❌ FAIL: /run/secrets/admin_jwt_secret missing"
     FAIL=1
 fi
 
