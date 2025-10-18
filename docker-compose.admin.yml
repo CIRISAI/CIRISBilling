@@ -1,9 +1,18 @@
 version: '3.8'
 
-# CIRIS Billing Admin UI
-# Separate compose file for admin interface isolation
+# CIRIS Billing Admin UI with Docker Secrets
 # Domain: billing.ciris.ai
-# Serves static admin UI and proxies API requests
+
+# Docker secrets for sensitive credentials
+secrets:
+  database_url:
+    file: ./secrets/database_url.txt
+  google_client_secret:
+    file: ./secrets/google_client_secret.txt
+  admin_jwt_secret:
+    file: ./secrets/secret_key.txt
+  encryption_key:
+    file: ./secrets/encryption_key.txt
 
 services:
   # Nginx reverse proxy for admin UI
@@ -41,24 +50,34 @@ services:
       dockerfile: Dockerfile
     container_name: ciris-billing-api
     restart: unless-stopped
+    secrets:
+      - database_url
+      - google_client_secret
+      - admin_jwt_secret
+      - encryption_key
     environment:
-      # Database
-      - DATABASE_URL=${DATABASE_URL}
-      - DATABASE_URL_READ=${DATABASE_URL_READ:-${DATABASE_URL}}
-      # Stripe
-      - STRIPE_API_KEY=${STRIPE_API_KEY}
-      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
-      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
-      # Admin OAuth
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - ADMIN_JWT_SECRET=${ADMIN_JWT_SECRET}
-      # Legacy (deprecated)
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-${ADMIN_JWT_SECRET}}
-      # Logging
+      # Non-sensitive configuration
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=production
+      # Google OAuth (client ID is public, not secret)
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      # Stripe (will be loaded from database, encrypted)
+      - STRIPE_API_KEY=${STRIPE_API_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY:-}
+    command: >
+      sh -c '
+        export DATABASE_URL=$$(cat /run/secrets/database_url) &&
+        export DATABASE_URL_READ=$${DATABASE_URL} &&
+        export GOOGLE_CLIENT_SECRET=$$(cat /run/secrets/google_client_secret) &&
+        export ADMIN_JWT_SECRET=$$(cat /run/secrets/admin_jwt_secret) &&
+        export JWT_SECRET_KEY=$${ADMIN_JWT_SECRET} &&
+        export SECRET_KEY=$${ADMIN_JWT_SECRET} &&
+        export SECRETS_ENCRYPTION_KEY=$$(cat /run/secrets/encryption_key) &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      '
     ports:
-      - "127.0.0.1:8000:8000"  # Internal only, accessed via nginx
+      - "0.0.0.0:8000:8000"  # Will be removed in Phase 3
     networks:
       - ciris-billing-network
     healthcheck:

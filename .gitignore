@@ -56,6 +56,11 @@ logs/
 # Docker
 docker-compose.override.yml
 
+# Secrets (NEVER commit)
+secrets/
+secrets-backup/
+*.backup-*
+
 # OS
 .DS_Store
 Thumbs.db
