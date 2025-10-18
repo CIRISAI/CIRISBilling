@@ -30,7 +30,8 @@ database_url = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://billing_admin:password@localhost:5432/ciris_billing",
 )
-config.set_main_option("sqlalchemy.url", database_url)
+# Use replace() to avoid ConfigParser interpolation issues with % in URL-encoded passwords
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:
