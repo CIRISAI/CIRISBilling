@@ -559,15 +559,15 @@ class BillingService:
         if account is None:
             raise AccountNotFoundError(identity)
 
-        # Add the full payment amount as credits
-        # The amount paid ($5.00 = 500 cents) is added to balance
-        # This provides credits for usage (each use costs 25 cents, so 500 cents = 20 uses)
-        credit_amount = amount_paid_minor
+        # Add uses as credits to balance
+        # Each use is 1 credit, so 20 uses = 20 credits
+        # The balance represents available uses, not dollar amounts
+        credit_amount = uses_to_add
 
         # Add credits using existing add_credits method
         credit_intent = CreditIntent(
             account_identity=identity,
-            amount_minor=credit_amount,
+            amount_minor=credit_amount,  # Adding uses, not cents
             currency="USD",
             transaction_type=TransactionType.PURCHASE,
             description=f"Purchased ${amount_paid_minor/100:.2f} ({uses_to_add} uses) via Stripe",
