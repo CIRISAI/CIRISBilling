@@ -267,6 +267,7 @@ function renderUsers() {
             <div class="flex justify-between items-start">
                 <div>
                     <h3 class="text-lg font-semibold">${user.external_id} (${user.oauth_provider})</h3>
+                    ${user.customer_email ? `<p class="text-sm text-blue-600 mt-1"><i class="fas fa-envelope"></i> ${user.customer_email}</p>` : '<p class="text-sm text-gray-400 mt-1"><i class="fas fa-envelope"></i> No email</p>'}
                     <div class="mt-2 text-sm text-gray-600">
                         <p><strong>Balance:</strong> ${formatMoney(user.balance_minor)}</p>
                         <p><strong>Plan:</strong> ${user.plan_name}</p>
