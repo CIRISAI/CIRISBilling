@@ -58,6 +58,9 @@ class Account(Base):
     free_uses_remaining: Mapped[int] = mapped_column(BigInteger, nullable=False, default=3)
     total_uses: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
+    # Paid credits (purchased uses)
+    paid_credits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
     # Status
     status: Mapped[str] = mapped_column(
         String(20),
@@ -88,6 +91,7 @@ class Account(Base):
         CheckConstraint("balance_minor >= 0", name="ck_balance_non_negative"),
         CheckConstraint("free_uses_remaining >= 0", name="ck_free_uses_non_negative"),
         CheckConstraint("total_uses >= 0", name="ck_total_uses_non_negative"),
+        CheckConstraint("paid_credits >= 0", name="ck_paid_credits_non_negative"),
         UniqueConstraint(
             "oauth_provider",
             "external_id",

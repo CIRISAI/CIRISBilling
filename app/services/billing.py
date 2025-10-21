@@ -125,7 +125,7 @@ class BillingService:
         if account.status == AccountStatus.SUSPENDED:
             return CreditCheckResponse(
                 has_credit=False,
-                credits_remaining=account.balance_minor,
+                credits_remaining=account.paid_credits,
                 plan_name=account.plan_name,
                 reason="Account suspended",
                 free_uses_remaining=account.free_uses_remaining,
@@ -136,16 +136,16 @@ class BillingService:
         if account.status == AccountStatus.CLOSED:
             return CreditCheckResponse(
                 has_credit=False,
-                credits_remaining=account.balance_minor,
+                credits_remaining=account.paid_credits,
                 plan_name=account.plan_name,
                 reason="Account closed",
                 free_uses_remaining=account.free_uses_remaining,
                 total_uses=account.total_uses,
             )
 
-        # Check if account has credit (free uses OR balance)
+        # Check if account has credit (free uses OR paid credits)
         has_free_uses = account.free_uses_remaining > 0
-        has_paid_credits = account.balance_minor > 0
+        has_paid_credits = account.paid_credits > 0
         has_credit = has_free_uses or has_paid_credits
 
         # Determine if purchase is required
@@ -153,7 +153,7 @@ class BillingService:
 
         return CreditCheckResponse(
             has_credit=has_credit,
-            credits_remaining=account.balance_minor,
+            credits_remaining=account.paid_credits,
             plan_name=account.plan_name,
             reason=None if has_credit else "No free uses or credits remaining",
             free_uses_remaining=account.free_uses_remaining,
@@ -209,18 +209,18 @@ class BillingService:
         using_free_use = account.free_uses_remaining > 0
 
         if using_free_use:
-            # Use free tier - don't charge balance
-            balance_before = account.balance_minor
-            balance_after = balance_before  # Balance unchanged for free use
+            # Use free tier - don't charge paid credits
+            credits_before = account.paid_credits
+            credits_after = credits_before  # Paid credits unchanged for free use
             free_uses_before = account.free_uses_remaining
             free_uses_after = free_uses_before - 1
         else:
-            # Use paid credits - charge balance
-            if account.balance_minor < intent.amount_minor:
-                raise InsufficientCreditsError(account.balance_minor, intent.amount_minor)
+            # Use paid credits - deduct from paid_credits
+            if account.paid_credits < intent.amount_minor:
+                raise InsufficientCreditsError(account.paid_credits, intent.amount_minor)
 
-            balance_before = account.balance_minor
-            balance_after = balance_before - intent.amount_minor
+            credits_before = account.paid_credits
+            credits_after = credits_before - intent.amount_minor
             free_uses_before = 0
             free_uses_after = 0
 
@@ -229,8 +229,8 @@ class BillingService:
             account_id=account.id,
             amount_minor=intent.amount_minor,
             currency=intent.currency,
-            balance_before=balance_before,
-            balance_after=balance_after,
+            balance_before=credits_before,
+            balance_after=credits_after,
             description=intent.description,
             idempotency_key=intent.idempotency_key,
             metadata_message_id=intent.metadata.message_id,
@@ -247,8 +247,8 @@ class BillingService:
         if verified_charge is None:
             raise WriteVerificationError(f"Charge {charge.id} not found after insert")
 
-        # Update account balance, free uses, and total uses
-        account.balance_minor = balance_after
+        # Update account paid credits, free uses, and total uses
+        account.paid_credits = credits_after
         if using_free_use:
             account.free_uses_remaining = free_uses_after
         account.total_uses = account.total_uses + 1
@@ -259,9 +259,9 @@ class BillingService:
         if verified_account is None:
             raise WriteVerificationError(f"Account {account.id} disappeared after update")
 
-        if verified_account.balance_minor != balance_after:
+        if verified_account.paid_credits != credits_after:
             raise DataIntegrityError(
-                f"Balance mismatch: expected {balance_after}, got {verified_account.balance_minor}"
+                f"Paid credits mismatch: expected {credits_after}, got {verified_account.paid_credits}"
             )
 
         if using_free_use and verified_account.free_uses_remaining != free_uses_after:
@@ -320,17 +320,17 @@ class BillingService:
                 f"Currency mismatch: account={account.currency}, credit={intent.currency}"
             )
 
-        # Calculate new balance
-        balance_before = account.balance_minor
-        balance_after = balance_before + intent.amount_minor
+        # Calculate new paid credits balance
+        credits_before = account.paid_credits
+        credits_after = credits_before + intent.amount_minor
 
         # Create credit record
         credit = Credit(
             account_id=account.id,
             amount_minor=intent.amount_minor,
             currency=intent.currency,
-            balance_before=balance_before,
-            balance_after=balance_after,
+            balance_before=credits_before,
+            balance_after=credits_after,
             transaction_type=intent.transaction_type,
             description=intent.description,
             external_transaction_id=intent.external_transaction_id,
@@ -345,18 +345,18 @@ class BillingService:
         if verified_credit is None:
             raise WriteVerificationError(f"Credit {credit.id} not found after insert")
 
-        # Update account balance
-        account.balance_minor = balance_after
+        # Update account paid credits
+        account.paid_credits = credits_after
         await self.session.flush()
 
-        # Verify balance was updated
+        # Verify paid credits was updated
         verified_account = await self.session.get(Account, account.id)
         if verified_account is None:
             raise WriteVerificationError(f"Account {account.id} disappeared after update")
 
-        if verified_account.balance_minor != balance_after:
+        if verified_account.paid_credits != credits_after:
             raise DataIntegrityError(
-                f"Balance mismatch: expected {balance_after}, got {verified_account.balance_minor}"
+                f"Paid credits mismatch: expected {credits_after}, got {verified_account.paid_credits}"
             )
 
         # Commit transaction
@@ -645,12 +645,12 @@ class BillingService:
             external_id=identity.external_id,
             wa_id=identity.wa_id,
             tenant_id=identity.tenant_id,
-            has_credit=account.balance_minor > 0 if account else False,
-            credits_remaining=account.balance_minor if account else None,
+            has_credit=account.paid_credits > 0 if account else False,
+            credits_remaining=account.paid_credits if account else None,
             plan_name=account.plan_name if account else None,
             denial_reason=(
                 None
-                if account and account.balance_minor > 0
+                if account and account.paid_credits > 0
                 else ("Insufficient credits" if account else "Account not found")
             ),
             context_agent_id=context.agent_id if context else None,
@@ -673,6 +673,7 @@ class BillingService:
             currency=account.currency,
             plan_name=account.plan_name,
             status=account.status,
+            paid_credits=account.paid_credits,
             marketing_opt_in=account.marketing_opt_in,
             marketing_opt_in_at=account.marketing_opt_in_at,
             marketing_opt_in_source=account.marketing_opt_in_source,

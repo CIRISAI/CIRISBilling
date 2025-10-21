@@ -101,6 +101,7 @@ class AccountData:
     currency: str
     plan_name: str
     status: AccountStatus
+    paid_credits: int
     marketing_opt_in: bool
     marketing_opt_in_at: datetime | None
     marketing_opt_in_source: str | None
