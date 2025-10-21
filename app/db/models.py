@@ -207,7 +207,7 @@ class Credit(Base):
 
     # Transaction type
     transaction_type: Mapped[TransactionType] = mapped_column(
-        SQLEnum(TransactionType, name="transaction_type", native_enum=False, length=20),
+        SQLEnum(TransactionType, name="transaction_type", native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
     )
 
