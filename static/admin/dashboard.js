@@ -269,10 +269,10 @@ function renderUsers() {
                     <h3 class="text-lg font-semibold">${user.external_id} (${user.oauth_provider})</h3>
                     ${user.customer_email ? `<p class="text-sm text-blue-600 mt-1"><i class="fas fa-envelope"></i> ${user.customer_email}</p>` : '<p class="text-sm text-gray-400 mt-1"><i class="fas fa-envelope"></i> No email</p>'}
                     <div class="mt-2 text-sm text-gray-600">
-                        <p><strong>Balance:</strong> ${formatMoney(user.balance_minor)}</p>
+                        <p><strong>Paid Credits:</strong> ${user.paid_credits || 0} credits</p>
+                        <p><strong>Free Uses:</strong> ${user.free_uses_remaining || 0} remaining</p>
+                        <p><strong>Total Uses:</strong> ${user.total_uses || 0}</p>
                         <p><strong>Plan:</strong> ${user.plan_name}</p>
-                        <p><strong>Total Charged:</strong> ${formatMoney(user.total_charged)}</p>
-                        <p><strong>Total Credited:</strong> ${formatMoney(user.total_credited)}</p>
                         <p><strong>Status:</strong> <span class="px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(user.status)}">${user.status}</span></p>
                         <p><strong>Created:</strong> ${formatDate(user.created_at)}</p>
                     </div>

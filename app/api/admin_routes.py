@@ -39,6 +39,9 @@ class UserResponse(BaseModel):
     tenant_id: Optional[str]
     customer_email: Optional[str]
     balance_minor: int
+    paid_credits: int
+    free_uses_remaining: int
+    total_uses: int
     currency: str
     plan_name: str
     status: str
@@ -240,6 +243,9 @@ async def list_users(
                 tenant_id=account.tenant_id,
                 customer_email=account.customer_email,
                 balance_minor=account.balance_minor,
+                paid_credits=account.paid_credits,
+                free_uses_remaining=account.free_uses_remaining,
+                total_uses=account.total_uses,
                 currency=account.currency,
                 plan_name=account.plan_name,
                 status=account.status,
@@ -336,6 +342,9 @@ async def get_user(
         tenant_id=account.tenant_id,
         customer_email=account.customer_email,
         balance_minor=account.balance_minor,
+        paid_credits=account.paid_credits,
+        free_uses_remaining=account.free_uses_remaining,
+        total_uses=account.total_uses,
         currency=account.currency,
         plan_name=account.plan_name,
         status=account.status,
