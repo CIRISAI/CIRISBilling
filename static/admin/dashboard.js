@@ -263,26 +263,43 @@ function renderUsers() {
     }
 
     const html = users.map(user => `
-        <div class="bg-white p-4 rounded-lg border">
-            <div class="flex justify-between items-start">
-                <div>
-                    <h3 class="text-lg font-semibold">${user.external_id} (${user.oauth_provider})</h3>
-                    ${user.customer_email ? `<p class="text-sm text-blue-600 mt-1"><i class="fas fa-envelope"></i> ${user.customer_email}</p>` : '<p class="text-sm text-gray-400 mt-1"><i class="fas fa-envelope"></i> No email</p>'}
-                    <div class="mt-2 text-sm text-gray-600">
-                        <p><strong>Paid Credits:</strong> ${user.paid_credits || 0} credits</p>
-                        <p><strong>Free Uses:</strong> ${user.free_uses_remaining || 0} remaining</p>
-                        <p><strong>Total Uses:</strong> ${user.total_uses || 0}</p>
-                        <p><strong>Plan:</strong> ${user.plan_name}</p>
-                        <p><strong>Status:</strong> <span class="px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadge(user.status)}">${user.status}</span></p>
-                        <p><strong>Created:</strong> ${formatDate(user.created_at)}</p>
-                    </div>
+        <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+            <div class="flex justify-between items-start mb-4">
+                <div class="flex-1">
+                    ${user.customer_email
+                        ? `<h3 class="text-xl font-bold text-gray-900 mb-1">${user.customer_email}</h3>
+                           <p class="text-sm text-gray-500">${user.external_id}</p>`
+                        : `<h3 class="text-xl font-bold text-gray-400 mb-1">No Email</h3>
+                           <p class="text-sm text-gray-500">${user.external_id}</p>`
+                    }
                 </div>
-                <div>
+                <div class="flex items-center gap-2">
+                    <span class="px-3 py-1 text-xs font-semibold rounded-full ${getStatusBadge(user.status)}">${user.status}</span>
                     <button onclick="viewUserDetails('${user.account_id}')"
-                            class="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">
-                        View Details
+                            class="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                        <i class="fas fa-eye"></i> View
                     </button>
                 </div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-4 mb-3">
+                <div class="bg-blue-50 p-3 rounded-lg">
+                    <div class="text-xs text-blue-600 font-semibold uppercase mb-1">Paid Credits</div>
+                    <div class="text-2xl font-bold text-blue-900">${user.paid_credits || 0}</div>
+                </div>
+                <div class="bg-green-50 p-3 rounded-lg">
+                    <div class="text-xs text-green-600 font-semibold uppercase mb-1">Free Uses Left</div>
+                    <div class="text-2xl font-bold text-green-900">${user.free_uses_remaining || 0}</div>
+                </div>
+                <div class="bg-purple-50 p-3 rounded-lg">
+                    <div class="text-xs text-purple-600 font-semibold uppercase mb-1">Total Uses</div>
+                    <div class="text-2xl font-bold text-purple-900">${user.total_uses || 0}</div>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between text-xs text-gray-500 pt-3 border-t border-gray-100">
+                <span><i class="fas fa-tag"></i> ${user.plan_name}</span>
+                <span><i class="fas fa-calendar"></i> ${formatDate(user.created_at)}</span>
             </div>
         </div>
     `).join('');
@@ -293,7 +310,32 @@ function renderUsers() {
 async function viewUserDetails(userId) {
     try {
         const user = await apiRequest(`/admin/api/users/${userId}`);
-        alert(`User: ${user.external_id}\nBalance: ${formatMoney(user.balance_minor)}\nStatus: ${user.status}\nPlan: ${user.plan_name}`);
+        const details = `
+User Details
+============
+
+Email: ${user.customer_email || 'No email'}
+External ID: ${user.external_id}
+OAuth Provider: ${user.oauth_provider}
+
+Credits & Usage
+===============
+Paid Credits: ${user.paid_credits || 0}
+Free Uses Remaining: ${user.free_uses_remaining || 0}
+Total Uses: ${user.total_uses || 0}
+
+Account Info
+============
+Plan: ${user.plan_name}
+Status: ${user.status}
+Created: ${formatDate(user.created_at)}
+
+Transaction Summary
+===================
+Total Charges: ${user.charge_count}
+Total Credits Added: ${user.credit_count}
+        `.trim();
+        alert(details);
     } catch (error) {
         showError('Failed to load user details');
     }
