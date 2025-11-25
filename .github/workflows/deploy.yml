@@ -53,8 +53,14 @@ jobs:
             echo "=== Building Docker image ==="
             docker build -t ciris-billing-api:latest .
 
+            echo "=== Reading secrets from Docker volumes ==="
+            DB_URL=$(docker run --rm -v cirisbilling_database_url:/vol alpine cat /vol/database_url)
+            GOOGLE_SECRET=$(docker run --rm -v cirisbilling_google_client_secret:/vol alpine cat /vol/google_client_secret)
+            JWT_SECRET=$(docker run --rm -v cirisbilling_admin_jwt_secret:/vol alpine cat /vol/admin_jwt_secret)
+            ENCRYPT_KEY=$(docker run --rm -v cirisbilling_encryption_key:/vol alpine cat /vol/encryption_key)
+
             echo "=== Running database migrations (before restart) ==="
-            docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic upgrade head' || {
+            docker exec ciris-billing-api sh -c "export DATABASE_URL='$DB_URL' && alembic upgrade head" || {
               echo "Migration failed or container not running, will run after restart"
             }
 
@@ -71,15 +77,15 @@ jobs:
               -p 8000:8000 \
               -e ENVIRONMENT=production \
               -e LOG_LEVEL=INFO \
+              -e "DATABASE_URL=$DB_URL" \
               -e GOOGLE_CLIENT_ID=265882853697-vsrucm66hl39jei1f5f20kb49om8t9pb.apps.googleusercontent.com \
+              -e "GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET" \
+              -e "ADMIN_JWT_SECRET=$JWT_SECRET" \
+              -e "ENCRYPTION_KEY=$ENCRYPT_KEY" \
               -e STRIPE_API_KEY=sk_test_placeholder \
               -e STRIPE_PUBLISHABLE_KEY=pk_test_placeholder \
               -e STRIPE_WEBHOOK_SECRET=whsec_placeholder \
-              -v cirisbilling_database_url:/run/secrets/database_url:ro \
-              -v cirisbilling_google_client_secret:/run/secrets/google_client_secret:ro \
-              -v cirisbilling_admin_jwt_secret:/run/secrets/admin_jwt_secret:ro \
-              -v cirisbilling_encryption_key:/run/secrets/encryption_key:ro \
-              --network cirisbilling_default \
+              --network ciris-billing-network \
               ciris-billing-api:latest
 
             echo "=== Waiting for service to be ready ==="
@@ -98,7 +104,7 @@ jobs:
             done
 
             echo "=== Running migrations (after restart) ==="
-            docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic upgrade head'
+            docker exec ciris-billing-api sh -c "export DATABASE_URL='$DB_URL' && alembic upgrade head"
 
             echo "=== Deployment complete! ==="
 
@@ -116,7 +122,8 @@ jobs:
             curl -s http://localhost:8000/health | python3 -m json.tool || echo "Health check failed"
 
             echo -e "\n=== Database Migration Version ==="
-            docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic current' || echo "Could not check migration version"
+            DB_URL=$(docker run --rm -v cirisbilling_database_url:/vol alpine cat /vol/database_url)
+            docker exec ciris-billing-api sh -c "export DATABASE_URL='$DB_URL' && alembic current" || echo "Could not check migration version"
 
             echo -e "\n=== Recent Logs ==="
             docker logs ciris-billing-api --tail 20
