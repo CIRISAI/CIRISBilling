@@ -38,7 +38,7 @@ def upgrade() -> None:
         sa.Column("acknowledged", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("consumed", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("credits_added", sa.Integer(), nullable=False),
-        sa.Column("credit_id", sa.BigInteger(), nullable=True),
+        sa.Column("credit_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

@@ -564,8 +564,8 @@ class GooglePlayPurchase(Base):
 
     # Credit tracking
     credits_added: Mapped[int] = mapped_column(Integer, nullable=False)
-    credit_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("credits.id", ondelete="SET NULL"), nullable=True
+    credit_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("credits.id", ondelete="SET NULL"), nullable=True
     )
 
     # Timestamps

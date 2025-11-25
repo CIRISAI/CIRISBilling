@@ -61,6 +61,7 @@ class TestGooglePlayPurchaseModel:
         assert "INTEGER" in str(columns["purchase_state"].type)
         assert "BOOLEAN" in str(columns["acknowledged"].type)
         assert "INTEGER" in str(columns["credits_added"].type)
+        assert "UUID" in str(columns["credit_id"].type)  # Must match credits.id type
 
     def test_model_purchase_token_length(self):
         """Test that purchase_token allows long tokens (Google Play can be 4KB)."""
