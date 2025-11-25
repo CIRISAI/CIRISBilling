@@ -34,6 +34,12 @@ from app.models.api import (
     GooglePlayVerifyRequest,
     GooglePlayVerifyResponse,
     HealthResponse,
+    LiteLLMAuthRequest,
+    LiteLLMAuthResponse,
+    LiteLLMChargeRequest,
+    LiteLLMChargeResponse,
+    LiteLLMUsageLogRequest,
+    LiteLLMUsageLogResponse,
     PurchaseRequest,
     PurchaseResponse,
     TransactionItem,
@@ -1134,6 +1140,211 @@ async def list_transactions(
         transactions=paginated_transactions,
         total_count=total_count,
         has_more=has_more,
+    )
+
+
+# ============================================================================
+# LiteLLM Proxy Integration Endpoints
+# ============================================================================
+
+
+@router.post("/v1/billing/litellm/auth", response_model=LiteLLMAuthResponse)
+async def litellm_auth_check(
+    request: LiteLLMAuthRequest,
+    db: AsyncSession = Depends(get_write_db),
+    api_key: APIKeyData = Depends(require_permission("billing:read")),
+) -> LiteLLMAuthResponse:
+    """
+    LiteLLM pre-request authorization check.
+
+    Called by LiteLLM proxy before allowing an interaction.
+    Checks if user has at least 1 credit available.
+
+    Returns:
+        authorized: True if user has >= 1 credit
+        credits_remaining: Current balance (before potential charge)
+        interaction_id: Echo back or generate for tracking
+    """
+    from uuid import uuid4
+
+    service = BillingService(db)
+
+    identity = AccountIdentity(
+        oauth_provider=request.oauth_provider,
+        external_id=request.external_id,
+        wa_id=None,
+        tenant_id=None,
+    )
+
+    # Check credit (this also creates account if it doesn't exist)
+    result = await service.check_credit(identity, context=None)
+
+    # Generate interaction_id if not provided
+    interaction_id = request.interaction_id or str(uuid4())
+
+    # User needs at least 1 credit (100 minor units = 1 credit)
+    has_credit = result.has_credit and (result.credits_remaining or 0) >= 100
+
+    return LiteLLMAuthResponse(
+        authorized=has_credit,
+        credits_remaining=(result.credits_remaining or 0) // 100,  # Convert to credits
+        reason=None if has_credit else "Insufficient credits",
+        interaction_id=interaction_id,
+    )
+
+
+@router.post(
+    "/v1/billing/litellm/charge",
+    response_model=LiteLLMChargeResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def litellm_charge(
+    request: LiteLLMChargeRequest,
+    db: AsyncSession = Depends(get_write_db),
+    api_key: APIKeyData = Depends(require_permission("billing:write")),
+) -> LiteLLMChargeResponse:
+    """
+    LiteLLM post-interaction charge.
+
+    Called by LiteLLM proxy after a successful interaction completes.
+    Deducts exactly 1 credit (100 minor units) per interaction.
+
+    Uses idempotency_key (defaults to interaction_id) to prevent double-charging.
+    """
+    service = BillingService(db)
+
+    identity = AccountIdentity(
+        oauth_provider=request.oauth_provider,
+        external_id=request.external_id,
+        wa_id=None,
+        tenant_id=None,
+    )
+
+    # Use interaction_id as default idempotency key
+    idempotency_key = request.idempotency_key or f"litellm:{request.interaction_id}"
+
+    intent = ChargeIntent(
+        account_identity=identity,
+        amount_minor=100,  # 1 credit = 100 minor units
+        currency="USD",
+        description=f"LiteLLM interaction: {request.interaction_id}",
+        metadata=ChargeMetadata(request_id=request.interaction_id),
+        idempotency_key=idempotency_key,
+    )
+
+    try:
+        charge_data = await service.create_charge(intent)
+
+        return LiteLLMChargeResponse(
+            charged=True,
+            credits_deducted=1,
+            credits_remaining=charge_data.balance_after // 100,  # Convert to credits
+            charge_id=charge_data.charge_id,
+        )
+
+    except AccountNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+
+    except InsufficientCreditsError as exc:
+        # Return success=False instead of error for idempotent handling
+        return LiteLLMChargeResponse(
+            charged=False,
+            credits_deducted=0,
+            credits_remaining=exc.balance // 100,
+            charge_id=None,
+        )
+
+    except IdempotencyConflictError as exc:
+        # Already charged - return success (idempotent)
+        return LiteLLMChargeResponse(
+            charged=True,
+            credits_deducted=1,
+            credits_remaining=0,  # Unknown, but charge was successful
+            charge_id=exc.existing_id,
+        )
+
+    except (AccountSuspendedError, AccountClosedError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        )
+
+
+@router.post(
+    "/v1/billing/litellm/usage",
+    response_model=LiteLLMUsageLogResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def litellm_log_usage(
+    request: LiteLLMUsageLogRequest,
+    db: AsyncSession = Depends(get_write_db),
+    api_key: APIKeyData = Depends(require_permission("billing:write")),
+) -> LiteLLMUsageLogResponse:
+    """
+    Log LLM usage for analytics.
+
+    Called by LiteLLM proxy to record actual provider costs.
+    This is for YOUR margin analytics - users pay 1 credit regardless.
+
+    Tracks:
+    - Total LLM calls per interaction (pondering loops = 12-70 calls)
+    - Token usage (prompt + completion)
+    - Models used (Groq, Together, etc.)
+    - Actual cost in cents
+    - Duration and error counts
+    """
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from app.db.models import Account, LLMUsageLog
+
+    # Find account
+    identity = AccountIdentity(
+        oauth_provider=request.oauth_provider,
+        external_id=request.external_id,
+        wa_id=None,
+        tenant_id=None,
+    )
+
+    stmt = select(Account).where(
+        Account.oauth_provider == identity.oauth_provider,
+        Account.external_id == identity.external_id,
+    )
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+
+    # Create usage log
+    usage_log = LLMUsageLog(
+        id=uuid4(),
+        account_id=account.id,
+        interaction_id=request.interaction_id,
+        charge_id=None,  # Could be linked later if needed
+        total_llm_calls=request.total_llm_calls,
+        total_prompt_tokens=request.total_prompt_tokens,
+        total_completion_tokens=request.total_completion_tokens,
+        models_used=request.models_used,
+        actual_cost_cents=request.actual_cost_cents,
+        duration_ms=request.duration_ms,
+        error_count=request.error_count,
+        fallback_count=request.fallback_count,
+    )
+
+    db.add(usage_log)
+    await db.commit()
+
+    return LiteLLMUsageLogResponse(
+        logged=True,
+        usage_log_id=usage_log.id,
     )
 
 

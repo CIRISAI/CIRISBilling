@@ -544,3 +544,124 @@ class GooglePlayVerifyResponse(BaseModel):
     order_id: str | None = None
     purchase_time_millis: int | None = None
     already_processed: bool = False
+
+
+# ============================================================================
+# LiteLLM Proxy Integration Models
+# ============================================================================
+
+
+class LiteLLMAuthRequest(BaseModel):
+    """
+    LiteLLM pre-request auth check.
+
+    Called by LiteLLM proxy before allowing a request.
+    Simple check: does user have at least 1 credit?
+    """
+
+    # User identity (from auth token)
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+
+    # Request context (optional)
+    model: str | None = Field(None, max_length=255, description="Requested model name")
+    interaction_id: str | None = Field(None, max_length=255, description="Unique interaction ID")
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+
+class LiteLLMAuthResponse(BaseModel):
+    """LiteLLM pre-request auth response."""
+
+    authorized: bool = Field(..., description="Whether user is authorized for request")
+    credits_remaining: int = Field(..., description="Credits remaining after this interaction")
+    reason: str | None = Field(None, description="Reason if not authorized")
+    interaction_id: str | None = Field(None, description="Interaction ID for tracking")
+
+
+class LiteLLMChargeRequest(BaseModel):
+    """
+    LiteLLM post-interaction charge.
+
+    Called by LiteLLM proxy after successful interaction completes.
+    Deducts 1 credit per interaction (regardless of actual LLM calls).
+    """
+
+    # User identity
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+
+    # Interaction tracking
+    interaction_id: str = Field(..., min_length=1, max_length=255)
+
+    # Idempotency (prevent double-charging)
+    idempotency_key: str | None = Field(None, max_length=255)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+
+class LiteLLMChargeResponse(BaseModel):
+    """LiteLLM post-interaction charge response."""
+
+    charged: bool = Field(..., description="Whether charge was successful")
+    credits_deducted: int = Field(default=1, description="Credits deducted (always 1)")
+    credits_remaining: int = Field(..., description="Credits remaining after charge")
+    charge_id: UUID | None = Field(None, description="Charge record ID")
+
+
+class LiteLLMUsageLogRequest(BaseModel):
+    """
+    LiteLLM usage analytics logging.
+
+    Called by LiteLLM proxy to log actual costs for YOUR analytics.
+    This is separate from billing - users pay 1 credit per interaction,
+    but you want to track actual provider costs to monitor margins.
+    """
+
+    # User identity
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+
+    # Interaction reference
+    interaction_id: str = Field(..., min_length=1, max_length=255)
+
+    # Usage metrics
+    total_llm_calls: int = Field(
+        ..., ge=1, description="Number of LLM API calls in this interaction"
+    )
+    total_prompt_tokens: int = Field(..., ge=0, description="Total prompt tokens across all calls")
+    total_completion_tokens: int = Field(..., ge=0, description="Total completion tokens")
+    models_used: list[str] = Field(default_factory=list, description="List of models used")
+    actual_cost_cents: int = Field(..., ge=0, description="Actual cost to providers in cents")
+    duration_ms: int = Field(..., ge=0, description="Total interaction duration in milliseconds")
+
+    # Error tracking
+    error_count: int = Field(default=0, ge=0, description="Number of failed LLM calls")
+    fallback_count: int = Field(default=0, ge=0, description="Number of fallback triggers")
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+
+class LiteLLMUsageLogResponse(BaseModel):
+    """LiteLLM usage log response."""
+
+    logged: bool = Field(..., description="Whether usage was logged")
+    usage_log_id: UUID | None = Field(None, description="Usage log record ID")

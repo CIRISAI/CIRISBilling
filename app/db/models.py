@@ -591,3 +591,62 @@ class GooglePlayPurchase(Base):
             f"<GooglePlayPurchase(id={self.id}, order_id={self.order_id}, "
             f"product_id={self.product_id}, credits={self.credits_added})>"
         )
+
+
+class LLMUsageLog(Base):
+    """
+    ORM model for LLM usage logs.
+
+    Tracks actual provider costs for analytics and margin monitoring.
+    Separate from billing - users pay 1 credit per interaction,
+    but this tracks what YOU pay to LLM providers.
+    """
+
+    __tablename__ = "llm_usage_logs"
+
+    # Primary Key
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+
+    # Foreign Key to Account
+    account_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Interaction tracking
+    interaction_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    charge_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("charges.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Usage metrics
+    total_llm_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_prompt_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_completion_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    models_used: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    actual_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Error tracking
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fallback_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    __table_args__ = (
+        Index("idx_llm_usage_logs_account_id", "account_id"),
+        Index("idx_llm_usage_logs_interaction_id", "interaction_id"),
+        Index("idx_llm_usage_logs_created_at", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        return (
+            f"<LLMUsageLog(id={self.id}, interaction_id={self.interaction_id}, "
+            f"calls={self.total_llm_calls}, cost_cents={self.actual_cost_cents})>"
+        )
