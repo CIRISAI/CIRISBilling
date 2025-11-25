@@ -370,7 +370,10 @@ class APIKey(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
 
     # Metadata (for rotation tracking, etc.)
-    key_metadata: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
+    # Note: Database column is "metadata", but Python uses "key_metadata" to avoid SQLAlchemy conflicts
+    key_metadata: Mapped[dict[str, str]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
 
     __table_args__ = (
         CheckConstraint("environment IN ('test', 'live')", name="ck_api_keys_environment"),
