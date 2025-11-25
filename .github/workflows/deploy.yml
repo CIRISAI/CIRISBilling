@@ -45,20 +45,42 @@ jobs:
           host: 149.28.120.73
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 10m
           script: |
             set -e
             cd /root/CIRISBilling
 
             echo "=== Building Docker image ==="
-            docker compose build
+            docker build -t ciris-billing-api:latest .
 
-            echo "=== Running database migrations ==="
+            echo "=== Running database migrations (before restart) ==="
             docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic upgrade head' || {
               echo "Migration failed or container not running, will run after restart"
             }
 
-            echo "=== Restarting API container ==="
-            docker compose up -d ciris-billing-api
+            echo "=== Stopping current container ==="
+            docker stop ciris-billing-api || true
+
+            echo "=== Removing old container ==="
+            docker rm ciris-billing-api || true
+
+            echo "=== Starting new container ==="
+            docker run -d \
+              --name ciris-billing-api \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e ENVIRONMENT=production \
+              -e LOG_LEVEL=INFO \
+              -e GOOGLE_CLIENT_ID=265882853697-vsrucm66hl39jei1f5f20kb49om8t9pb.apps.googleusercontent.com \
+              -e STRIPE_API_KEY=sk_test_placeholder \
+              -e STRIPE_PUBLISHABLE_KEY=pk_test_placeholder \
+              -e STRIPE_WEBHOOK_SECRET=whsec_placeholder \
+              -v cirisbilling_database_url:/run/secrets/database_url:ro \
+              -v cirisbilling_google_client_secret:/run/secrets/google_client_secret:ro \
+              -v cirisbilling_admin_jwt_secret:/run/secrets/admin_jwt_secret:ro \
+              -v cirisbilling_encryption_key:/run/secrets/encryption_key:ro \
+              --network cirisbilling_default \
+              ciris-billing-api:latest
 
             echo "=== Waiting for service to be ready ==="
             for i in {1..30}; do
@@ -75,7 +97,7 @@ jobs:
               sleep 2
             done
 
-            echo "=== Ensuring migrations are up to date ==="
+            echo "=== Running migrations (after restart) ==="
             docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic upgrade head'
 
             echo "=== Deployment complete! ==="
