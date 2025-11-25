@@ -79,13 +79,13 @@ class StripeProvider:
 
             return PaymentResult(
                 payment_id=payment_intent.id,
-                client_secret=payment_intent.client_secret,
+                client_secret=payment_intent.client_secret or "",
                 status=payment_intent.status,
                 amount_minor=payment_intent.amount,
                 currency=payment_intent.currency.upper(),
             )
 
-        except stripe.error.StripeError as exc:
+        except stripe.StripeError as exc:
             logger.error(
                 "stripe_payment_intent_failed",
                 error=str(exc),
@@ -119,13 +119,13 @@ class StripeProvider:
 
             return PaymentResult(
                 payment_id=payment_intent.id,
-                client_secret=payment_intent.client_secret,
+                client_secret=payment_intent.client_secret or "",
                 status=payment_intent.status,
                 amount_minor=payment_intent.amount,
                 currency=payment_intent.currency.upper(),
             )
 
-        except stripe.error.StripeError as exc:
+        except stripe.StripeError as exc:
             logger.error(
                 "stripe_payment_status_failed",
                 payment_intent_id=payment_id,
@@ -159,7 +159,7 @@ class StripeProvider:
 
             return is_succeeded
 
-        except stripe.error.StripeError as exc:
+        except stripe.StripeError as exc:
             logger.error(
                 "stripe_payment_confirmation_failed",
                 payment_intent_id=payment_id,
@@ -185,7 +185,9 @@ class StripeProvider:
             logger.info("verifying_stripe_webhook", signature_present=bool(signature))
 
             # Verify webhook signature
-            event = stripe.Webhook.construct_event(payload, signature, self.webhook_secret)
+            event = stripe.Webhook.construct_event(  # type: ignore[no-untyped-call]
+                payload, signature, self.webhook_secret
+            )
 
             logger.info(
                 "stripe_webhook_verified",
@@ -213,7 +215,7 @@ class StripeProvider:
 
             return webhook_event
 
-        except stripe.error.SignatureVerificationError as exc:
+        except stripe.SignatureVerificationError as exc:
             logger.error("stripe_webhook_verification_failed", error=str(exc))
             raise WebhookVerificationError("Invalid Stripe webhook signature") from exc
         except Exception as exc:
@@ -242,11 +244,13 @@ class StripeProvider:
             )
 
             # Create refund
-            refund_params: dict[str, str | int] = {"payment_intent": payment_id}
             if amount_minor is not None:
-                refund_params["amount"] = amount_minor
-
-            refund = stripe.Refund.create(**refund_params)
+                refund = stripe.Refund.create(
+                    payment_intent=payment_id,
+                    amount=amount_minor,
+                )
+            else:
+                refund = stripe.Refund.create(payment_intent=payment_id)
 
             logger.info(
                 "stripe_refund_created",
@@ -258,7 +262,7 @@ class StripeProvider:
             refund_id: str = refund.id
             return refund_id
 
-        except stripe.error.StripeError as exc:
+        except stripe.StripeError as exc:
             logger.error(
                 "stripe_refund_failed",
                 payment_intent_id=payment_id,

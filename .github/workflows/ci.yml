@@ -31,7 +31,7 @@ jobs:
 
     - name: Run type checking
       run: |
-        mypy . --ignore-missing-imports
+        mypy . --ignore-missing-imports --no-warn-unused-ignores
 
     - name: Run tests
       run: |

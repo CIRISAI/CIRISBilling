@@ -157,6 +157,7 @@ class trace_operation:
         self.operation_name = operation_name
         self.attributes = attributes
         self.span: Span | None = None
+        self.context: Any = None
         self.tracer = get_tracer("app.operations")
 
     def __enter__(self) -> Span:
@@ -164,8 +165,8 @@ class trace_operation:
         self.span = self.tracer.start_span(self.operation_name)
         if self.span:
             add_span_attributes(self.span, **self.attributes)
-        # Make it the current span
-        self.token = trace.set_span_in_context(self.span).__enter__()
+        # Store context for cleanup (context is immutable, no enter/exit needed)
+        self.context = trace.set_span_in_context(self.span)
         return self.span
 
     def __exit__(self, exc_type: type, exc_val: Exception, exc_tb: object) -> None:
