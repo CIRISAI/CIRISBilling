@@ -2,9 +2,17 @@
 Tests for Google Play database migration and model.
 """
 
+from pathlib import Path
+
 from sqlalchemy import inspect
 
 from app.db.models import Base, GooglePlayPurchase
+
+# Get project root from test file location
+PROJECT_ROOT = Path(__file__).parent.parent
+MIGRATION_FILE = (
+    PROJECT_ROOT / "alembic" / "versions" / "2025_11_25_0009-add_google_play_support.py"
+)
 
 
 class TestGooglePlayPurchaseModel:
@@ -129,24 +137,13 @@ class TestMigrationFile:
 
     def test_migration_file_exists(self):
         """Test that migration file exists."""
-        import os
-
-        migration_path = (
-            "/home/emoore/CIRISBilling/alembic/versions/"
-            "2025_11_25_0009-add_google_play_support.py"
-        )
-        assert os.path.exists(migration_path)
+        assert MIGRATION_FILE.exists(), f"Migration file not found at {MIGRATION_FILE}"
 
     def test_migration_revision_chain(self):
         """Test that migration has correct revision chain."""
         import importlib.util
 
-        migration_path = (
-            "/home/emoore/CIRISBilling/alembic/versions/"
-            "2025_11_25_0009-add_google_play_support.py"
-        )
-
-        spec = importlib.util.spec_from_file_location("migration", migration_path)
+        spec = importlib.util.spec_from_file_location("migration", str(MIGRATION_FILE))
         assert spec is not None and spec.loader is not None
         migration = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(migration)
@@ -158,12 +155,7 @@ class TestMigrationFile:
         """Test that migration has upgrade and downgrade functions."""
         import importlib.util
 
-        migration_path = (
-            "/home/emoore/CIRISBilling/alembic/versions/"
-            "2025_11_25_0009-add_google_play_support.py"
-        )
-
-        spec = importlib.util.spec_from_file_location("migration", migration_path)
+        spec = importlib.util.spec_from_file_location("migration", str(MIGRATION_FILE))
         assert spec is not None and spec.loader is not None
         migration = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(migration)
