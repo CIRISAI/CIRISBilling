@@ -58,8 +58,11 @@ def upgrade() -> None:
         sa.Column("last_used_ip", postgresql.INET(), nullable=True),
         sa.Column("status", sa.String(length=20), nullable=False, server_default="active"),
         sa.Column(
-            "metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="{}"
-        ),  # type: ignore[no-untyped-call]
+            "metadata",
+            postgresql.JSONB(astext_type=sa.Text()),  # type: ignore[no-untyped-call]
+            nullable=False,
+            server_default="{}",
+        ),
         sa.CheckConstraint("environment IN ('test', 'live')", name="ck_api_keys_environment"),
         sa.CheckConstraint(
             "status IN ('active', 'rotating', 'revoked')", name="ck_api_keys_status"

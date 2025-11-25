@@ -84,7 +84,7 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
         logger = get_logger(__name__)
         logger.info("credit_check_performed", account_id=account_id, has_credit=True)
     """
-    return structlog.get_logger(name)  # type: ignore[return-value]
+    return structlog.get_logger(name)  # type: ignore[no-any-return]
 
 
 # Context manager for adding request context
