@@ -2,8 +2,8 @@
 Main Application - FastAPI application setup.
 """
 
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,11 +59,14 @@ app = FastAPI(
 setup_tracing()
 instrument_fastapi(app)
 
+
 # Proxy headers middleware - trust X-Forwarded-* headers from nginx
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
     """Middleware to handle X-Forwarded-* headers from reverse proxy."""
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         # Fix scheme based on X-Forwarded-Proto header
         forwarded_proto = request.headers.get("X-Forwarded-Proto")
         if forwarded_proto:
@@ -72,6 +75,7 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
         return response
+
 
 app.add_middleware(ProxyHeadersMiddleware)
 
@@ -84,9 +88,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Request logging middleware
 @app.middleware("http")
-async def logging_middleware(request: Request, call_next):
+async def logging_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     """Log all HTTP requests with timing."""
     import time
 

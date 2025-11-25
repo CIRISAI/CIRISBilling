@@ -11,16 +11,18 @@ Target user: oauth:google / 999888777666555444
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from app.db.models import Account, Charge
+from uuid import UUID
+
 import structlog
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.db.models import Account, Charge
 
 logger = structlog.get_logger()
 
@@ -35,14 +37,13 @@ async def get_qa_account(session: AsyncSession) -> Account | None:
     """Get the QA test account."""
     result = await session.execute(
         select(Account).where(
-            Account.oauth_provider == QA_OAUTH_PROVIDER,
-            Account.external_id == QA_EXTERNAL_ID
+            Account.oauth_provider == QA_OAUTH_PROVIDER, Account.external_id == QA_EXTERNAL_ID
         )
     )
     return result.scalar_one_or_none()
 
 
-async def get_last_activity_time(session: AsyncSession, account_id: str) -> datetime | None:
+async def get_last_activity_time(session: AsyncSession, account_id: UUID) -> datetime | None:
     """Get the timestamp of the last charge for this account."""
     result = await session.execute(
         select(Charge.created_at)
@@ -64,7 +65,7 @@ async def replenish_credits(session: AsyncSession, account: Account) -> None:
         account_id=str(account.id),
         external_id=account.external_id,
         free_uses=TARGET_FREE_USES,
-        total_uses=account.total_uses
+        total_uses=account.total_uses,
     )
 
 
@@ -78,7 +79,7 @@ async def check_and_replenish() -> None:
 
     # Create async engine and session
     engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as session:
         # Get the QA account
@@ -86,9 +87,7 @@ async def check_and_replenish() -> None:
 
         if not account:
             logger.warning(
-                "qa_account_not_found",
-                oauth_provider=QA_OAUTH_PROVIDER,
-                external_id=QA_EXTERNAL_ID
+                "qa_account_not_found", oauth_provider=QA_OAUTH_PROVIDER, external_id=QA_EXTERNAL_ID
             )
             return
 
@@ -97,7 +96,7 @@ async def check_and_replenish() -> None:
             logger.debug(
                 "qa_account_already_full",
                 account_id=str(account.id),
-                free_uses=account.free_uses_remaining
+                free_uses=account.free_uses_remaining,
             )
             return
 
@@ -111,7 +110,7 @@ async def check_and_replenish() -> None:
             return
 
         # Check if inactive long enough
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         time_since_last = (now - last_activity).total_seconds()
 
         if time_since_last > INACTIVITY_THRESHOLD_SECONDS:
@@ -119,7 +118,7 @@ async def check_and_replenish() -> None:
                 "qa_account_inactive_replenishing",
                 account_id=str(account.id),
                 seconds_since_last_activity=int(time_since_last),
-                threshold=INACTIVITY_THRESHOLD_SECONDS
+                threshold=INACTIVITY_THRESHOLD_SECONDS,
             )
             await replenish_credits(session, account)
         else:
@@ -127,7 +126,7 @@ async def check_and_replenish() -> None:
                 "qa_account_recently_active",
                 account_id=str(account.id),
                 seconds_since_last_activity=int(time_since_last),
-                free_uses_remaining=account.free_uses_remaining
+                free_uses_remaining=account.free_uses_remaining,
             )
 
     await engine.dispose()
@@ -147,7 +146,7 @@ async def run_loop() -> None:
         await asyncio.sleep(60)
 
 
-def main():
+def main() -> None:
     """Main entry point."""
     try:
         asyncio.run(run_loop())

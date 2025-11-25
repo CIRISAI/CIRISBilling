@@ -4,8 +4,8 @@ Metrics Collection with Prometheus.
 Exposes business and system metrics for monitoring.
 """
 
+from collections.abc import Callable
 from enum import Enum
-from typing import Callable
 
 from prometheus_client import Counter, Gauge, Histogram, Info
 
@@ -202,9 +202,7 @@ class BillingMetrics:
         self, success: bool, amount_minor: int, duration: float, error_type: str | None = None
     ) -> None:
         """Record charge creation metrics."""
-        self.charges_total.labels(
-            success=str(success), error_type=error_type or "none"
-        ).inc()
+        self.charges_total.labels(success=str(success), error_type=error_type or "none").inc()
         if success:
             self.charge_amount_minor.observe(amount_minor)
         self.charge_duration_seconds.observe(duration)
@@ -262,9 +260,7 @@ class track_http_request:
         import time
 
         self.start_time = time.time()
-        metrics.http_requests_in_progress.labels(
-            endpoint=self.endpoint, method=self.method
-        ).inc()
+        metrics.http_requests_in_progress.labels(endpoint=self.endpoint, method=self.method).inc()
         return self
 
     def __exit__(self, exc_type: type, exc_val: Exception, exc_tb: object) -> None:
@@ -275,9 +271,7 @@ class track_http_request:
         if exc_type is not None:
             self.status_code = 500  # Default to 500 on exception
         metrics.record_http_request(self.endpoint, self.method, self.status_code, duration)
-        metrics.http_requests_in_progress.labels(
-            endpoint=self.endpoint, method=self.method
-        ).dec()
+        metrics.http_requests_in_progress.labels(endpoint=self.endpoint, method=self.method).dec()
 
 
 def get_metrics_handler() -> Callable[[], bytes]:

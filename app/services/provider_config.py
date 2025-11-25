@@ -44,3 +44,33 @@ class ProviderConfigService:
             "webhook_secret": config_data.get("webhook_secret", ""),
             "publishable_key": config_data.get("publishable_key", ""),
         }
+
+    async def get_google_play_config(self) -> dict[str, str] | None:
+        """
+        Get active Google Play configuration from database.
+
+        Returns:
+            Dict with service_account_json, package_name or None if not configured
+        """
+        stmt = select(ProviderConfig).where(
+            ProviderConfig.provider_type == "google_play",
+            ProviderConfig.is_active == True,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        config = result.scalar_one_or_none()
+
+        if config is None:
+            logger.warning("google_play_config_not_found")
+            return None
+
+        config_data = config.config_data
+        logger.info(
+            "google_play_config_loaded",
+            has_service_account=bool(config_data.get("service_account_json")),
+            package_name=config_data.get("package_name"),
+        )
+
+        return {
+            "service_account_json": config_data.get("service_account_json", ""),
+            "package_name": config_data.get("package_name", ""),
+        }

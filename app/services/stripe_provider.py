@@ -10,7 +10,6 @@ from structlog import get_logger
 from app.exceptions import PaymentProviderError, WebhookVerificationError
 from app.services.payment_provider import (
     PaymentIntent,
-    PaymentProvider,
     PaymentResult,
     WebhookEvent,
 )
@@ -149,7 +148,7 @@ class StripeProvider:
             logger.info("confirming_stripe_payment", payment_intent_id=payment_id)
 
             payment_intent = stripe.PaymentIntent.retrieve(payment_id)
-            is_succeeded = payment_intent.status == "succeeded"
+            is_succeeded: bool = payment_intent.status == "succeeded"
 
             logger.info(
                 "stripe_payment_confirmed",
@@ -186,9 +185,7 @@ class StripeProvider:
             logger.info("verifying_stripe_webhook", signature_present=bool(signature))
 
             # Verify webhook signature
-            event = stripe.Webhook.construct_event(
-                payload, signature, self.webhook_secret
-            )
+            event = stripe.Webhook.construct_event(payload, signature, self.webhook_secret)
 
             logger.info(
                 "stripe_webhook_verified",
@@ -206,7 +203,9 @@ class StripeProvider:
                 payment_id=payment_intent.id,
                 status=payment_intent.status,
                 amount_minor=payment_intent.get("amount"),
-                currency=payment_intent.get("currency", "").upper() if payment_intent.get("currency") else None,
+                currency=payment_intent.get("currency", "").upper()
+                if payment_intent.get("currency")
+                else None,
                 metadata_account_id=payment_intent.get("metadata", {}).get("account_id"),
                 metadata_oauth_provider=payment_intent.get("metadata", {}).get("oauth_provider"),
                 metadata_external_id=payment_intent.get("metadata", {}).get("external_id"),
@@ -243,7 +242,7 @@ class StripeProvider:
             )
 
             # Create refund
-            refund_params = {"payment_intent": payment_id}
+            refund_params: dict[str, str | int] = {"payment_intent": payment_id}
             if amount_minor is not None:
                 refund_params["amount"] = amount_minor
 
@@ -256,7 +255,8 @@ class StripeProvider:
                 amount_minor=refund.amount,
             )
 
-            return refund.id
+            refund_id: str = refund.id
+            return refund_id
 
         except stripe.error.StripeError as exc:
             logger.error(

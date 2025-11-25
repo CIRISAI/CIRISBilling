@@ -4,16 +4,15 @@ Admin authentication dependencies for protecting admin routes.
 Provides FastAPI dependencies for JWT validation and role checking.
 """
 
-from typing import Optional
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
-from app.db.session import get_write_db
 from app.config import get_settings
 from app.db.models import AdminUser
+from app.db.session import get_write_db
 from app.services.admin_auth import AdminAuthService
 from app.services.google_oauth import GoogleOAuthProvider
 
@@ -37,7 +36,7 @@ def get_admin_auth_service() -> AdminAuthService:
 
 async def get_current_admin(
     request: Request,
-    authorization: Optional[str] = Header(None),
+    authorization: str | None = Header(None),
     db: AsyncSession = Depends(get_write_db),
     auth_service: AdminAuthService = Depends(get_admin_auth_service),
 ) -> AdminUser:
@@ -83,7 +82,7 @@ async def get_current_admin(
 
     # Get admin user from database
     try:
-        user_id = UUID(payload["sub"])
+        user_id = UUID(str(payload["sub"]))
     except (ValueError, KeyError) as e:
         logger.warning("admin_auth_invalid_user_id", error=str(e))
         raise HTTPException(

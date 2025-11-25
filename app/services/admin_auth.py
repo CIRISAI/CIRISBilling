@@ -5,8 +5,7 @@ Simplified from CIRISManager - stores admin users in PostgreSQL.
 """
 
 import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import jwt
@@ -35,9 +34,7 @@ class AdminAuthService:
         self.jwt_expire_hours = jwt_expire_hours
         self._sessions: dict[str, OAuthSession] = {}  # In-memory session store
 
-    async def initiate_oauth_flow(
-        self, redirect_uri: str, callback_url: str
-    ) -> tuple[str, str]:
+    async def initiate_oauth_flow(self, redirect_uri: str, callback_url: str) -> tuple[str, str]:
         """
         Initiate OAuth flow.
 
@@ -48,18 +45,23 @@ class AdminAuthService:
         session = OAuthSession(
             redirect_uri=redirect_uri,
             callback_url=callback_url,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
         )
 
         self._sessions[state] = session
         auth_url = await self.oauth_provider.get_authorization_url(state, callback_url)
 
-        logger.info("oauth_flow_initiated", state=state[:8], callback_url=callback_url, auth_url_preview=auth_url[:150])
+        logger.info(
+            "oauth_flow_initiated",
+            state=state[:8],
+            callback_url=callback_url,
+            auth_url_preview=auth_url[:150],
+        )
         return state, auth_url
 
     async def handle_oauth_callback(
         self, code: str, state: str, db: AsyncSession
-    ) -> dict:
+    ) -> dict[str, str | dict[str, str | None]]:
         """
         Handle OAuth callback.
 
@@ -86,7 +88,7 @@ class AdminAuthService:
         admin_user = await self._get_or_create_admin_user(db, user)
 
         # Update last login
-        admin_user.last_login_at = datetime.now(timezone.utc)
+        admin_user.last_login_at = datetime.now(UTC)
         await db.commit()
 
         # Generate JWT
@@ -114,9 +116,7 @@ class AdminAuthService:
             },
         }
 
-    async def _get_or_create_admin_user(
-        self, db: AsyncSession, oauth_user: OAuthUser
-    ) -> AdminUser:
+    async def _get_or_create_admin_user(self, db: AsyncSession, oauth_user: OAuthUser) -> AdminUser:
         """Get existing admin user or create if doesn't exist."""
         stmt = select(AdminUser).where(AdminUser.email == oauth_user.email)
         result = await db.execute(stmt)
@@ -181,7 +181,7 @@ class AdminAuthService:
 
     def _create_jwt_token(self, admin_user: AdminUser) -> str:
         """Create JWT token for admin user."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         payload = {
             "sub": str(admin_user.id),
             "email": admin_user.email,
@@ -192,10 +192,10 @@ class AdminAuthService:
 
         return jwt.encode(payload, self.jwt_secret, algorithm="HS256")
 
-    def verify_jwt_token(self, token: str) -> Optional[dict]:
+    def verify_jwt_token(self, token: str) -> dict[str, str | int] | None:
         """Verify JWT token and return payload."""
         try:
-            payload = jwt.decode(token, self.jwt_secret, algorithms=["HS256"])
+            payload: dict[str, str | int] = jwt.decode(token, self.jwt_secret, algorithms=["HS256"])
             return payload
         except jwt.ExpiredSignatureError:
             logger.warning("jwt_token_expired")
@@ -204,9 +204,7 @@ class AdminAuthService:
             logger.warning("jwt_token_invalid", error=str(e))
             return None
 
-    async def get_admin_user_by_id(
-        self, db: AsyncSession, user_id: UUID
-    ) -> Optional[AdminUser]:
+    async def get_admin_user_by_id(self, db: AsyncSession, user_id: UUID) -> AdminUser | None:
         """Get admin user by ID."""
         stmt = select(AdminUser).where(AdminUser.id == user_id)
         result = await db.execute(stmt)

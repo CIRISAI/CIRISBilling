@@ -4,7 +4,6 @@ API Models - Pydantic models for request/response validation.
 NO DICTIONARIES - All data structures are strongly typed.
 """
 
-from datetime import datetime
 from enum import Enum
 from typing import Literal
 from uuid import UUID
@@ -52,15 +51,28 @@ class CreditCheckRequest(BaseModel):
     context: CreditCheckContext = Field(default_factory=CreditCheckContext)
 
     # User contact information
-    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
+    customer_email: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User email address for receipts and notifications",
+    )
 
     # User metadata
-    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
-    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+    user_role: str | None = Field(
+        None, max_length=50, description="User role (admin, authority, observer)"
+    )
+    agent_id: str | None = Field(
+        None, max_length=255, description="Unique agent ID making the request"
+    )
 
     # Marketing consent (GDPR compliance)
-    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
-    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+    marketing_opt_in: bool = Field(
+        default=False, description="User consent for marketing communications"
+    )
+    marketing_opt_in_source: str | None = Field(
+        None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')"
+    )
 
     @field_validator("oauth_provider")
     @classmethod
@@ -113,15 +125,28 @@ class CreateChargeRequest(BaseModel):
     metadata: ChargeMetadata = Field(default_factory=ChargeMetadata)
 
     # User contact information
-    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
+    customer_email: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User email address for receipts and notifications",
+    )
 
     # User metadata
-    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
-    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+    user_role: str | None = Field(
+        None, max_length=50, description="User role (admin, authority, observer)"
+    )
+    agent_id: str | None = Field(
+        None, max_length=255, description="Unique agent ID making the request"
+    )
 
     # Marketing consent (GDPR compliance)
-    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
-    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+    marketing_opt_in: bool = Field(
+        default=False, description="User consent for marketing communications"
+    )
+    marketing_opt_in_source: str | None = Field(
+        None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')"
+    )
 
     @field_validator("oauth_provider")
     @classmethod
@@ -192,15 +217,28 @@ class AddCreditsRequest(BaseModel):
     idempotency_key: str | None = Field(None, max_length=255)
 
     # User contact information
-    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
+    customer_email: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User email address for receipts and notifications",
+    )
 
     # User metadata
-    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
-    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+    user_role: str | None = Field(
+        None, max_length=50, description="User role (admin, authority, observer)"
+    )
+    agent_id: str | None = Field(
+        None, max_length=255, description="Unique agent ID making the request"
+    )
 
     # Marketing consent (GDPR compliance)
-    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
-    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+    marketing_opt_in: bool = Field(
+        default=False, description="User consent for marketing communications"
+    )
+    marketing_opt_in_source: str | None = Field(
+        None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')"
+    )
 
     @field_validator("oauth_provider")
     @classmethod
@@ -247,12 +285,20 @@ class PurchaseRequest(BaseModel):
     return_url: str | None = Field(None, min_length=1)
 
     # User metadata
-    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
-    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+    user_role: str | None = Field(
+        None, max_length=50, description="User role (admin, authority, observer)"
+    )
+    agent_id: str | None = Field(
+        None, max_length=255, description="Unique agent ID making the request"
+    )
 
     # Marketing consent (GDPR compliance)
-    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
-    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+    marketing_opt_in: bool = Field(
+        default=False, description="User consent for marketing communications"
+    )
+    marketing_opt_in_source: str | None = Field(
+        None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')"
+    )
 
     @field_validator("oauth_provider")
     @classmethod
@@ -292,7 +338,9 @@ class TransactionItem(BaseModel):
     balance_after: int
 
     # Optional fields that may appear on credits
-    transaction_type: TransactionType | None = None  # For credits: purchase, grant, refund, adjustment
+    transaction_type: TransactionType | None = (
+        None  # For credits: purchase, grant, refund, adjustment
+    )
     external_transaction_id: str | None = None  # For credits: Stripe payment ID, etc.
 
     # Optional fields that may appear on charges
@@ -343,15 +391,28 @@ class CreateAccountRequest(BaseModel):
     plan_name: str = Field(default="free", min_length=1, max_length=100)
 
     # User contact information
-    customer_email: str | None = Field(None, min_length=1, max_length=255, description="User email address for receipts and notifications")
+    customer_email: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User email address for receipts and notifications",
+    )
 
     # User metadata
-    user_role: str | None = Field(None, max_length=50, description="User role (admin, authority, observer)")
-    agent_id: str | None = Field(None, max_length=255, description="Unique agent ID making the request")
+    user_role: str | None = Field(
+        None, max_length=50, description="User role (admin, authority, observer)"
+    )
+    agent_id: str | None = Field(
+        None, max_length=255, description="Unique agent ID making the request"
+    )
 
     # Marketing consent (GDPR compliance)
-    marketing_opt_in: bool = Field(default=False, description="User consent for marketing communications")
-    marketing_opt_in_source: str | None = Field(None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')")
+    marketing_opt_in: bool = Field(
+        default=False, description="User consent for marketing communications"
+    )
+    marketing_opt_in_source: str | None = Field(
+        None, max_length=50, description="Source of consent (e.g., 'oauth_login', 'settings')"
+    )
 
     @field_validator("oauth_provider")
     @classmethod
@@ -425,3 +486,61 @@ class ValidationErrorResponse(BaseModel):
     """422 Validation Error response."""
 
     detail: list[ValidationErrorDetail]
+
+
+# ============================================================================
+# Google Play Models
+# ============================================================================
+
+
+class GooglePlayVerifyRequest(BaseModel):
+    """POST /v1/billing/google-play/verify request body."""
+
+    # Account identity (same pattern as other endpoints)
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+
+    # Google Play purchase details
+    purchase_token: str = Field(..., min_length=10, max_length=4096)
+    product_id: str = Field(..., max_length=255)
+    package_name: str = Field(..., max_length=255)
+
+    # User contact information
+    customer_email: str | None = Field(None, min_length=1, max_length=255)
+
+    # User metadata
+    user_role: str | None = Field(None, max_length=50)
+    agent_id: str | None = Field(None, max_length=255)
+
+    # Marketing consent
+    marketing_opt_in: bool = Field(default=False)
+    marketing_opt_in_source: str | None = Field(None, max_length=50)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith("oauth:"):
+            raise ValueError('oauth_provider must start with "oauth:"')
+        return v
+
+    @field_validator("purchase_token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        """Validate purchase token."""
+        if not v or len(v.strip()) < 10:
+            raise ValueError("Invalid purchase token")
+        return v.strip()
+
+
+class GooglePlayVerifyResponse(BaseModel):
+    """POST /v1/billing/google-play/verify response."""
+
+    verified: bool
+    credits_added: int
+    balance_after: int
+    order_id: str | None = None
+    purchase_time_millis: int | None = None
+    already_processed: bool = False

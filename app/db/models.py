@@ -4,15 +4,28 @@ Database Models - SQLAlchemy ORM models with strict typing.
 NO DICTIONARIES - All columns use Mapped[] type annotations.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, CheckConstraint, String, DateTime, ForeignKey, Index, UniqueConstraint, Text, Boolean, ARRAY
+from sqlalchemy import (
+    ARRAY,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, INET, JSONB
+from sqlalchemy.dialects.postgresql import INET, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from app.models.api import AccountStatus, TransactionType
+from app.models.api import TransactionType
 
 
 class Base(DeclarativeBase):
@@ -23,7 +36,7 @@ class Base(DeclarativeBase):
 
 def utc_now() -> datetime:
     """Get current UTC timestamp."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Account(Base):
@@ -101,9 +114,7 @@ class Account(Base):
         ),
         Index("idx_accounts_oauth_external", "oauth_provider", "external_id"),
         Index("idx_accounts_wa_id", "wa_id", postgresql_where=(wa_id.isnot(None))),
-        Index(
-            "idx_accounts_tenant_id", "tenant_id", postgresql_where=(tenant_id.isnot(None))
-        ),
+        Index("idx_accounts_tenant_id", "tenant_id", postgresql_where=(tenant_id.isnot(None))),
         Index("idx_accounts_status", "status"),
         Index("idx_accounts_updated_at", "updated_at"),
     )
@@ -129,9 +140,7 @@ class Charge(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
 
     # Foreign Key to Account
-    account_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False, index=True
-    )
+    account_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
 
     # Amount
     amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -197,9 +206,7 @@ class Credit(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
 
     # Foreign Key to Account
-    account_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False, index=True
-    )
+    account_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
 
     # Amount
     amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -211,7 +218,13 @@ class Credit(Base):
 
     # Transaction type
     transaction_type: Mapped[TransactionType] = mapped_column(
-        SQLEnum(TransactionType, name="transaction_type", native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]),
+        SQLEnum(
+            TransactionType,
+            name="transaction_type",
+            native_enum=False,
+            length=20,
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
     )
 
@@ -339,7 +352,7 @@ class APIKey(Base):
         PG_UUID(as_uuid=True),
         ForeignKey("admin_users.id"),
         nullable=False,
-        index=True
+        index=True,
     )
     created_by: Mapped["AdminUser"] = relationship("AdminUser", lazy="selectin")
 
@@ -347,35 +360,22 @@ class APIKey(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Usage tracking
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_ip: Mapped[str | None] = mapped_column(INET, nullable=True)
 
     # Status
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="active"
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+
+    # Metadata (for rotation tracking, etc.)
+    key_metadata: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (
-        CheckConstraint(
-            "environment IN ('test', 'live')",
-            name="ck_api_keys_environment"
-        ),
-        CheckConstraint(
-            "status IN ('active', 'rotating', 'revoked')",
-            name="ck_api_keys_status"
-        ),
-        Index(
-            "idx_api_keys_prefix_active",
-            "key_prefix",
-            postgresql_where=(status == "active")
-        ),
+        CheckConstraint("environment IN ('test', 'live')", name="ck_api_keys_environment"),
+        CheckConstraint("status IN ('active', 'rotating', 'revoked')", name="ck_api_keys_status"),
+        Index("idx_api_keys_prefix_active", "key_prefix", postgresql_where=(status == "active")),
         Index("idx_api_keys_created_by", "created_by"),
         Index("idx_api_keys_status", "status"),
     )
@@ -418,19 +418,11 @@ class AdminUser(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
-    last_login_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        CheckConstraint(
-            "role IN ('admin', 'viewer')",
-            name="ck_admin_users_role"
-        ),
-        CheckConstraint(
-            "email LIKE '%@ciris.ai'",
-            name="ck_admin_users_ciris_domain"
-        ),
+        CheckConstraint("role IN ('admin', 'viewer')", name="ck_admin_users_role"),
+        CheckConstraint("email LIKE '%@ciris.ai'", name="ck_admin_users_ciris_domain"),
         Index("idx_admin_users_email", "email"),
         Index("idx_admin_users_google_id", "google_id"),
         Index("idx_admin_users_role", "role"),
@@ -461,7 +453,7 @@ class ProviderConfig(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Configuration data (encrypted secrets)
-    config_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    config_data: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -472,14 +464,12 @@ class ProviderConfig(Base):
     )
 
     # Audit
-    updated_by: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=True
-    )
+    updated_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
-            "provider_type IN ('stripe', 'square', 'paypal')",
-            name="ck_provider_configs_type"
+            "provider_type IN ('stripe', 'google_play', 'square', 'paypal')",
+            name="ck_provider_configs_type",
         ),
     )
 
@@ -514,7 +504,7 @@ class AdminAuditLog(Base):
     resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Changes (JSON diff)
-    changes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    changes: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
 
     # Request context
     ip_address: Mapped[str | None] = mapped_column(INET, nullable=True)
@@ -537,4 +527,64 @@ class AdminAuditLog(Base):
         return (
             f"<AdminAuditLog(id={self.id}, action={self.action}, "
             f"resource={self.resource_type})>"
+        )
+
+
+class GooglePlayPurchase(Base):
+    """
+    ORM model for google_play_purchases table.
+
+    Tracks Google Play In-App Billing purchases for idempotency.
+    """
+
+    __tablename__ = "google_play_purchases"
+
+    # Primary Key
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    # Foreign Key to Account
+    account_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Google Play fields
+    purchase_token: Mapped[str] = mapped_column(String(4096), nullable=False, unique=True)
+    order_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    product_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    package_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    purchase_time_millis: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    purchase_state: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Processing state
+    acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    consumed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Credit tracking
+    credits_added: Mapped[int] = mapped_column(Integer, nullable=False)
+    credit_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("credits.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        Index("idx_google_play_purchases_purchase_token", "purchase_token", unique=True),
+        Index("idx_google_play_purchases_order_id", "order_id"),
+        Index("idx_google_play_purchases_account_id", "account_id"),
+    )
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        return (
+            f"<GooglePlayPurchase(id={self.id}, order_id={self.order_id}, "
+            f"product_id={self.product_id}, credits={self.credits_added})>"
         )

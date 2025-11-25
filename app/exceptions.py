@@ -29,9 +29,7 @@ class AccountNotFoundError(BillingError):
 
     def __init__(self, identity: AccountIdentity) -> None:
         self.identity = identity
-        super().__init__(
-            f"Account not found: {identity.oauth_provider}/{identity.external_id}"
-        )
+        super().__init__(f"Account not found: {identity.oauth_provider}/{identity.external_id}")
 
 
 class AccountSuspendedError(BillingError):

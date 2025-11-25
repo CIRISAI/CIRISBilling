@@ -2,7 +2,7 @@
 End-to-End API Tests
 
 Tests all major API endpoints against local stack.
-Run with: pytest tests/e2e/test_api_endpoints.py -v
+Run with: pytest tests/e2e/test_api_endpoints.py -v -m live
 """
 
 import time
@@ -10,6 +10,9 @@ from uuid import uuid4
 
 import httpx
 import pytest
+
+# Mark all tests in this module as live tests (require running infrastructure)
+pytestmark = pytest.mark.live
 
 BASE_URL = "http://localhost:8000"
 

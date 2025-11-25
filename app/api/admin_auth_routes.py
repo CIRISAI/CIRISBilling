@@ -4,15 +4,13 @@ Admin authentication routes for Google OAuth.
 Handles OAuth flow, JWT token management, and user sessions.
 """
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
-from app.db.session import get_write_db
 from app.config import get_settings
+from app.db.session import get_write_db
 from app.services.admin_auth import AdminAuthService
 from app.services.google_oauth import GoogleOAuthProvider
 
@@ -20,7 +18,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/admin/oauth", tags=["admin-auth"])
 
 # Singleton admin auth service instance (shared across all requests)
-_admin_auth_service: Optional[AdminAuthService] = None
+_admin_auth_service: AdminAuthService | None = None
 
 
 def get_admin_auth_service() -> AdminAuthService:
@@ -46,7 +44,7 @@ def get_admin_auth_service() -> AdminAuthService:
 @router.get("/login")
 async def google_login(
     request: Request,
-    redirect_uri: Optional[str] = None,
+    redirect_uri: str | None = None,
     auth_service: AdminAuthService = Depends(get_admin_auth_service),
 ) -> RedirectResponse:
     """
@@ -116,21 +114,30 @@ async def google_callback(
         # Complete OAuth flow
         result = await auth_service.handle_oauth_callback(code, state, db)
 
+        # Type assertion: user is always a dict with user info
+        user_info = result["user"]
+        assert isinstance(user_info, dict)
         logger.info(
             "oauth_callback_success",
-            user_email=result["user"]["email"],
-            user_role=result["user"]["role"],
+            user_email=user_info["email"],
+            user_role=user_info["role"],
         )
+
+        # Extract string values (type assertions for mypy)
+        access_token = result["access_token"]
+        redirect_uri = result["redirect_uri"]
+        assert isinstance(access_token, str)
+        assert isinstance(redirect_uri, str)
 
         # Set HttpOnly cookie for browser
         response_redirect = RedirectResponse(
-            url=f"{result['redirect_uri']}?token={result['access_token']}",
+            url=f"{redirect_uri}?token={access_token}",
             status_code=status.HTTP_302_FOUND,
         )
 
         response_redirect.set_cookie(
             key="admin_token",
-            value=result["access_token"],
+            value=access_token,
             httponly=True,
             secure=True,  # HTTPS only
             samesite="lax",
@@ -156,7 +163,7 @@ async def google_callback(
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict:
+async def logout(response: Response) -> dict[str, str]:
     """
     Logout current admin user.
 
@@ -175,10 +182,10 @@ async def logout(response: Response) -> dict:
 @router.get("/user")
 async def get_current_user(
     request: Request,
-    authorization: Optional[str] = None,
+    authorization: str | None = None,
     db: AsyncSession = Depends(get_write_db),
     auth_service: AdminAuthService = Depends(get_admin_auth_service),
-) -> dict:
+) -> dict[str, str | None]:
     """
     Get current authenticated admin user info.
 
@@ -213,7 +220,7 @@ async def get_current_user(
     # Get user from database
     from uuid import UUID
 
-    user_id = UUID(payload["sub"])
+    user_id = UUID(str(payload["sub"]))
     admin_user = await auth_service.get_admin_user_by_id(db, user_id)
 
     if not admin_user or not admin_user.is_active:

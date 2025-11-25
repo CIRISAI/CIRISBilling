@@ -4,7 +4,7 @@ Billing Service - Core business logic with write verification.
 NO DICTIONARIES - All operations use strongly typed domain models.
 """
 
-from uuid import UUID
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -21,13 +21,10 @@ from app.exceptions import (
     WriteVerificationError,
 )
 from app.models.api import (
-    AccountResponse,
     AccountStatus,
     ChargeMetadata,
-    ChargeResponse,
     CreditCheckContext,
     CreditCheckResponse,
-    CreditResponse,
     TransactionType,
 )
 from app.models.domain import (
@@ -38,6 +35,11 @@ from app.models.domain import (
     CreditData,
     CreditIntent,
 )
+
+
+def _utc_now() -> datetime:
+    """Get current UTC timestamp."""
+    return datetime.now(UTC)
 
 
 class BillingService:
@@ -72,7 +74,6 @@ class BillingService:
         Logs the check for audit purposes.
         """
         from app.config import settings
-        from app.db.models import utc_now
 
         # Find account
         account = await self._find_account_by_identity(identity)
@@ -92,7 +93,7 @@ class BillingService:
                 free_uses_remaining=settings.free_uses_per_account,
                 total_uses=0,
                 marketing_opt_in=marketing_opt_in,
-                marketing_opt_in_at=utc_now() if marketing_opt_in else None,
+                marketing_opt_in_at=_utc_now() if marketing_opt_in else None,
                 marketing_opt_in_source=marketing_opt_in_source,
                 user_role=user_role,
                 agent_id=agent_id,
@@ -108,8 +109,11 @@ class BillingService:
             except IntegrityError as e:
                 # Race condition - account created by another request
                 from structlog import get_logger
+
                 logger = get_logger(__name__)
-                logger.error("account_creation_integrity_error", error=str(e), identity=str(identity))
+                logger.error(
+                    "account_creation_integrity_error", error=str(e), identity=str(identity)
+                )
                 await self.session.rollback()
                 account = await self._find_account_by_identity(identity)
                 if account is None:
@@ -411,7 +415,7 @@ class BillingService:
             plan_name=plan_name,
             status=AccountStatus.ACTIVE,
             marketing_opt_in=marketing_opt_in,
-            marketing_opt_in_at=utc_now() if marketing_opt_in else None,
+            marketing_opt_in_at=_utc_now() if marketing_opt_in else None,
             marketing_opt_in_source=marketing_opt_in_source,
             user_role=user_role,
             agent_id=agent_id,
@@ -464,7 +468,6 @@ class BillingService:
 
         Only updates fields that are not None.
         """
-        from app.db.models import utc_now
         from structlog import get_logger
 
         logger = get_logger(__name__)
@@ -501,7 +504,7 @@ class BillingService:
 
         if marketing_opt_in is not None and account.marketing_opt_in != marketing_opt_in:
             account.marketing_opt_in = marketing_opt_in
-            account.marketing_opt_in_at = utc_now() if marketing_opt_in else None
+            account.marketing_opt_in_at = _utc_now() if marketing_opt_in else None
             if marketing_opt_in_source is not None:
                 account.marketing_opt_in_source = marketing_opt_in_source
             updated = True
@@ -580,7 +583,7 @@ class BillingService:
         # Return updated account
         updated_account = await self._find_account_by_identity(identity)
         if updated_account is None:
-            raise WriteVerificationError(f"Account disappeared after purchase")
+            raise WriteVerificationError("Account disappeared after purchase")
 
         return self._account_to_domain(updated_account)
 
@@ -672,7 +675,7 @@ class BillingService:
             balance_minor=account.balance_minor,
             currency=account.currency,
             plan_name=account.plan_name,
-            status=account.status,
+            status=AccountStatus(account.status),
             paid_credits=account.paid_credits,
             marketing_opt_in=account.marketing_opt_in,
             marketing_opt_in_at=account.marketing_opt_in_at,

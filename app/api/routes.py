@@ -4,13 +4,14 @@ API Routes - FastAPI endpoints for billing operations.
 NO DICTIONARIES - All requests/responses use Pydantic models.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from datetime import UTC
 
-from app.api.dependencies import get_api_key, require_permission
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.dependencies import require_permission
 from app.db.session import get_read_db, get_write_db
-from app.services.api_key import APIKeyData
 from app.exceptions import (
     AccountClosedError,
     AccountNotFoundError,
@@ -30,6 +31,8 @@ from app.models.api import (
     CreditCheckRequest,
     CreditCheckResponse,
     CreditResponse,
+    GooglePlayVerifyRequest,
+    GooglePlayVerifyResponse,
     HealthResponse,
     PurchaseRequest,
     PurchaseResponse,
@@ -37,8 +40,8 @@ from app.models.api import (
     TransactionListResponse,
 )
 from app.models.domain import AccountIdentity, ChargeIntent, CreditIntent
+from app.services.api_key import APIKeyData
 from app.services.billing import BillingService
-
 
 router = APIRouter()
 
@@ -170,7 +173,7 @@ async def create_charge(
     except AccountClosedError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Account is closed",
+            detail="Account is closed",
         ) from exc
 
     except IdempotencyConflictError as exc:
@@ -341,8 +344,9 @@ async def create_purchase(
 
     # Create payment intent with Stripe
     # Use current timestamp for idempotency to allow multiple purchase attempts
-    from datetime import datetime, timezone
-    current_timestamp = int(datetime.now(timezone.utc).timestamp())
+    from datetime import datetime
+
+    current_timestamp = int(datetime.now(UTC).timestamp())
 
     payment_intent = PaymentIntent(
         amount_minor=settings.price_per_purchase_minor,
@@ -503,7 +507,9 @@ async def create_or_update_account(
             status=account_data.status,
             paid_credits=account_data.paid_credits,
             marketing_opt_in=account_data.marketing_opt_in,
-            marketing_opt_in_at=account_data.marketing_opt_in_at.isoformat() if account_data.marketing_opt_in_at else None,
+            marketing_opt_in_at=account_data.marketing_opt_in_at.isoformat()
+            if account_data.marketing_opt_in_at
+            else None,
             marketing_opt_in_source=account_data.marketing_opt_in_source,
             created_at=account_data.created_at.isoformat(),
             updated_at=account_data.updated_at.isoformat(),
@@ -559,7 +565,9 @@ async def get_account(
             status=account_data.status,
             paid_credits=account_data.paid_credits,
             marketing_opt_in=account_data.marketing_opt_in,
-            marketing_opt_in_at=account_data.marketing_opt_in_at.isoformat() if account_data.marketing_opt_in_at else None,
+            marketing_opt_in_at=account_data.marketing_opt_in_at.isoformat()
+            if account_data.marketing_opt_in_at
+            else None,
             marketing_opt_in_source=account_data.marketing_opt_in_source,
             created_at=account_data.created_at.isoformat(),
             updated_at=account_data.updated_at.isoformat(),
@@ -582,11 +590,12 @@ async def stripe_webhook(
 
     Processes payment confirmations and updates account balances.
     """
+    from structlog import get_logger
+
     from app.config import settings
-    from app.exceptions import PaymentProviderError, WebhookVerificationError
+    from app.exceptions import WebhookVerificationError
     from app.services.provider_config import ProviderConfigService
     from app.services.stripe_provider import StripeProvider
-    from structlog import get_logger
 
     logger = get_logger(__name__)
 
@@ -623,7 +632,11 @@ async def stripe_webhook(
         # Handle payment success
         if webhook_event.event_type == "payment_intent.succeeded":
             # Extract account info from metadata
-            if not webhook_event.metadata_account_id or not webhook_event.metadata_oauth_provider or not webhook_event.metadata_external_id:
+            if (
+                not webhook_event.metadata_account_id
+                or not webhook_event.metadata_oauth_provider
+                or not webhook_event.metadata_external_id
+            ):
                 logger.error("stripe_webhook_missing_metadata", event_id=webhook_event.event_id)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -649,7 +662,8 @@ async def stripe_webhook(
                         identity=identity,
                         uses_to_add=settings.paid_uses_per_purchase,
                         payment_id=webhook_event.payment_id,
-                        amount_paid_minor=webhook_event.amount_minor or settings.price_per_purchase_minor,
+                        amount_paid_minor=webhook_event.amount_minor
+                        or settings.price_per_purchase_minor,
                     )
                     logger.info(
                         "stripe_payment_credited",
@@ -701,6 +715,300 @@ async def stripe_webhook(
         ) from exc
 
 
+# =============================================================================
+# Google Play Endpoints
+# =============================================================================
+
+
+@router.post(
+    "/v1/billing/google-play/verify",
+    response_model=GooglePlayVerifyResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def verify_google_play_purchase(
+    request: GooglePlayVerifyRequest,
+    db: AsyncSession = Depends(get_write_db),
+    api_key: APIKeyData = Depends(require_permission("billing:write")),
+) -> GooglePlayVerifyResponse:
+    """
+    Verify Google Play purchase and add credits to account.
+
+    Flow:
+    1. Android app completes purchase via Google Play Billing Library
+    2. App receives purchase token
+    3. App calls this endpoint with token
+    4. Backend verifies with Google Play Developer API
+    5. Backend consumes purchase (prevents reuse)
+    6. Backend credits user's account
+
+    Idempotent: Same purchase_token can be called multiple times safely.
+    Only the first call will add credits.
+
+    Requires: API key with billing:write permission.
+    """
+    from sqlalchemy import select
+    from structlog import get_logger
+
+    from app.db.models import GooglePlayPurchase
+    from app.exceptions import PaymentProviderError
+    from app.models.google_play import GooglePlayPurchaseToken
+    from app.services.google_play_products import get_credits_for_product
+    from app.services.google_play_provider import GooglePlayProvider
+    from app.services.provider_config import ProviderConfigService
+
+    logger = get_logger(__name__)
+
+    service = BillingService(db)
+
+    identity = AccountIdentity(
+        oauth_provider=request.oauth_provider,
+        external_id=request.external_id,
+        wa_id=request.wa_id,
+        tenant_id=request.tenant_id,
+    )
+
+    # Check if purchase already processed (idempotency)
+    existing_stmt = select(GooglePlayPurchase).where(
+        GooglePlayPurchase.purchase_token == request.purchase_token
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing_purchase = existing_result.scalar_one_or_none()
+
+    if existing_purchase:
+        logger.info(
+            "google_play_purchase_already_processed",
+            order_id=existing_purchase.order_id,
+            credits_added=existing_purchase.credits_added,
+        )
+        # Get current account balance
+        try:
+            account_data = await service.get_account(identity)
+            balance_after = account_data.paid_credits
+        except AccountNotFoundError:
+            balance_after = existing_purchase.credits_added
+
+        return GooglePlayVerifyResponse(
+            verified=True,
+            credits_added=existing_purchase.credits_added,
+            balance_after=balance_after,
+            order_id=existing_purchase.order_id,
+            purchase_time_millis=existing_purchase.purchase_time_millis,
+            already_processed=True,
+        )
+
+    # Load Google Play config from database
+    config_service = ProviderConfigService(db)
+    google_play_config = await config_service.get_google_play_config()
+
+    if not google_play_config:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google Play provider not configured",
+        )
+
+    try:
+        # Initialize provider
+        provider = GooglePlayProvider(
+            service_account_json=google_play_config["service_account_json"],
+            package_name=google_play_config["package_name"],
+        )
+
+        # Verify purchase with Google Play
+        purchase_token = GooglePlayPurchaseToken(
+            token=request.purchase_token,
+            product_id=request.product_id,
+            package_name=request.package_name,
+        )
+        verification = await provider.verify_purchase(purchase_token)
+
+        # Validate purchase state
+        if not verification.is_valid():
+            logger.warning(
+                "google_play_purchase_invalid",
+                order_id=verification.order_id,
+                purchase_state=verification.purchase_state,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Purchase not valid: state={verification.purchase_state}",
+            )
+
+        # Get credits for product
+        try:
+            credits_to_add = get_credits_for_product(request.product_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        # Get or create account
+        account_data = await service.get_or_create_account(
+            identity=identity,
+            initial_balance_minor=0,
+            currency="USD",
+            plan_name="free",
+            customer_email=request.customer_email,
+            marketing_opt_in=request.marketing_opt_in,
+            marketing_opt_in_source=request.marketing_opt_in_source,
+            user_role=request.user_role,
+            agent_id=request.agent_id,
+        )
+
+        # Add credits
+        await service.add_purchased_uses(
+            identity=identity,
+            uses_to_add=credits_to_add,
+            payment_id=verification.order_id,
+            amount_paid_minor=0,  # Google Play handles payment
+        )
+
+        # Get updated account
+        account_data = await service.get_account(identity)
+
+        # Record purchase for idempotency
+        purchase_record = GooglePlayPurchase(
+            account_id=account_data.account_id,
+            purchase_token=request.purchase_token,
+            order_id=verification.order_id,
+            product_id=request.product_id,
+            package_name=request.package_name,
+            purchase_time_millis=verification.purchase_time_millis,
+            purchase_state=verification.purchase_state,
+            acknowledged=False,
+            consumed=False,
+            credits_added=credits_to_add,
+        )
+        db.add(purchase_record)
+
+        # Consume purchase (prevents reuse)
+        try:
+            await provider.consume_purchase(
+                purchase_token=request.purchase_token,
+                product_id=request.product_id,
+            )
+            purchase_record.consumed = True
+            purchase_record.acknowledged = True
+        except PaymentProviderError as exc:
+            logger.error(
+                "google_play_consume_failed",
+                order_id=verification.order_id,
+                error=str(exc),
+            )
+            # Don't fail - credits are already added
+
+        await db.commit()
+
+        logger.info(
+            "google_play_purchase_verified",
+            order_id=verification.order_id,
+            product_id=request.product_id,
+            credits_added=credits_to_add,
+            account_id=str(account_data.account_id),
+        )
+
+        return GooglePlayVerifyResponse(
+            verified=True,
+            credits_added=credits_to_add,
+            balance_after=account_data.paid_credits,
+            order_id=verification.order_id,
+            purchase_time_millis=verification.purchase_time_millis,
+            already_processed=False,
+        )
+
+    except PaymentProviderError as exc:
+        logger.error("google_play_verification_failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        logger.exception("google_play_verification_unexpected_error")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Verification failed",
+        ) from exc
+
+
+@router.post("/v1/billing/webhooks/google-play")
+async def google_play_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_write_db),
+) -> dict[str, str]:
+    """
+    Handle Google Play Real-Time Developer Notifications (RTDN).
+
+    Google sends notifications for:
+    - ONE_TIME_PRODUCT_PURCHASED (type=1)
+    - ONE_TIME_PRODUCT_CANCELED (type=2)
+
+    This is supplementary to the verify endpoint. The verify endpoint
+    is the primary flow. Webhooks handle edge cases like refunds.
+    """
+    from structlog import get_logger
+
+    from app.exceptions import WebhookVerificationError
+    from app.services.google_play_provider import GooglePlayProvider
+    from app.services.provider_config import ProviderConfigService
+
+    logger = get_logger(__name__)
+
+    # Read raw webhook payload
+    payload = await request.body()
+
+    # Load Google Play config
+    config_service = ProviderConfigService(db)
+    google_play_config = await config_service.get_google_play_config()
+
+    if not google_play_config:
+        logger.warning("google_play_webhook_provider_not_configured")
+        return {"status": "ignored", "reason": "provider_not_configured"}
+
+    try:
+        # Initialize provider and verify webhook
+        provider = GooglePlayProvider(
+            service_account_json=google_play_config["service_account_json"],
+            package_name=google_play_config["package_name"],
+        )
+        webhook_event = await provider.verify_webhook(payload)
+
+        logger.info(
+            "google_play_webhook_received",
+            event_type=webhook_event.event_type,
+            product_id=webhook_event.product_id,
+            notification_type=webhook_event.notification_type,
+        )
+
+        # Handle cancellation/refund (type=2)
+        if webhook_event.notification_type == 2:
+            logger.warning(
+                "google_play_purchase_canceled",
+                product_id=webhook_event.product_id,
+                purchase_token=webhook_event.purchase_token[:20] + "...",
+            )
+            # TODO: Implement credit clawback for refunds
+            # For now, log for manual review
+
+        return {"status": "ok", "event_type": webhook_event.event_type}
+
+    except WebhookVerificationError as exc:
+        logger.error("google_play_webhook_verification_failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid webhook payload",
+        ) from exc
+
+    except Exception as exc:
+        logger.exception("google_play_webhook_processing_failed")
+        # Return 200 to prevent retries - we'll investigate manually
+        return {"status": "error", "message": str(exc)}
+
+
 @router.get("/v1/billing/transactions", response_model=TransactionListResponse)
 async def list_transactions(
     oauth_provider: str,
@@ -719,8 +1027,9 @@ async def list_transactions(
     Read operation - served from replica.
     Requires: API key with billing:read permission.
     """
-    from sqlalchemy import select, union_all
-    from app.db.models import Charge, Credit, Account
+    from sqlalchemy import select
+
+    from app.db.models import Charge, Credit
 
     service = BillingService(db)
 
@@ -743,39 +1052,33 @@ async def list_transactions(
         )
 
     # Get charges (debits)
-    charges_stmt = (
-        select(
-            Charge.id.label("transaction_id"),
-            Charge.amount_minor,
-            Charge.currency,
-            Charge.description,
-            Charge.created_at,
-            Charge.balance_after,
-            Charge.metadata_message_id,
-            Charge.metadata_agent_id,
-            Charge.metadata_channel_id,
-            Charge.metadata_request_id,
-        )
-        .where(Charge.account_id == account_data.account_id)
-    )
+    charges_stmt = select(
+        Charge.id.label("transaction_id"),
+        Charge.amount_minor,
+        Charge.currency,
+        Charge.description,
+        Charge.created_at,
+        Charge.balance_after,
+        Charge.metadata_message_id,
+        Charge.metadata_agent_id,
+        Charge.metadata_channel_id,
+        Charge.metadata_request_id,
+    ).where(Charge.account_id == account_data.account_id)
 
     charges_result = await db.execute(charges_stmt)
     charges = charges_result.all()
 
     # Get credits
-    credits_stmt = (
-        select(
-            Credit.id.label("transaction_id"),
-            Credit.amount_minor,
-            Credit.currency,
-            Credit.description,
-            Credit.created_at,
-            Credit.balance_after,
-            Credit.transaction_type,
-            Credit.external_transaction_id,
-        )
-        .where(Credit.account_id == account_data.account_id)
-    )
+    credits_stmt = select(
+        Credit.id.label("transaction_id"),
+        Credit.amount_minor,
+        Credit.currency,
+        Credit.description,
+        Credit.created_at,
+        Credit.balance_after,
+        Credit.transaction_type,
+        Credit.external_transaction_id,
+    ).where(Credit.account_id == account_data.account_id)
 
     credits_result = await db.execute(credits_stmt)
     credits = credits_result.all()
@@ -841,7 +1144,7 @@ async def health_check(db: AsyncSession = Depends(get_read_db)) -> HealthRespons
 
     Verifies database connectivity.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     try:
         # Test database connection
@@ -850,7 +1153,7 @@ async def health_check(db: AsyncSession = Depends(get_read_db)) -> HealthRespons
         return HealthResponse(
             status="healthy",
             database="connected",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
 
     except Exception as exc:
@@ -860,6 +1163,6 @@ async def health_check(db: AsyncSession = Depends(get_read_db)) -> HealthRespons
                 "status": "unhealthy",
                 "database": "disconnected",
                 "error": str(exc),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         ) from exc

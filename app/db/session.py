@@ -4,9 +4,8 @@ Database Session Management - Async SQLAlchemy session factory.
 Provides separate read and write database connections.
 """
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -16,7 +15,6 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
-
 
 # Global engine instances
 _write_engine: AsyncEngine | None = None

@@ -1,0 +1,130 @@
+name: Deploy CIRISBilling
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual deployment
+
+jobs:
+  # First ensure CI passes
+  ci:
+    name: Run CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run linting
+        run: |
+          ruff check app/
+          ruff format --check app/
+
+      - name: Run type checking
+        run: |
+          mypy . --ignore-missing-imports
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v --cov=app --cov-report=term-missing
+
+  deploy:
+    name: Deploy to Production
+    needs: ci  # Only deploy if CI passes
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.repository == 'CIRISAI/CIRISBilling'
+    environment: production
+
+    steps:
+      - name: Deploy CIRISBilling
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: 149.28.120.73
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+
+            echo "Deploying CIRISBilling..."
+
+            # Clone or update repository
+            if [ ! -d "/root/CIRISBilling" ]; then
+              echo "First time deployment - cloning repository..."
+              git clone https://github.com/CIRISAI/CIRISBilling.git /root/CIRISBilling
+            else
+              echo "Updating existing deployment..."
+              cd /root/CIRISBilling
+              git fetch origin
+              git reset --hard origin/main
+            fi
+
+            cd /root/CIRISBilling
+
+            # Rebuild Docker image
+            echo "Building Docker image..."
+            docker compose build
+
+            # Run database migrations
+            echo "Running database migrations..."
+            docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic upgrade head' || {
+              echo "Migration failed or container not running, will run after restart"
+            }
+
+            # Restart the API container
+            echo "Restarting API container..."
+            docker compose up -d ciris-billing-api
+
+            # Wait for container to be healthy
+            echo "Waiting for service to be ready..."
+            for i in {1..30}; do
+              if curl -sf http://localhost:8000/health 2>/dev/null; then
+                echo "✓ CIRISBilling API is healthy!"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "ERROR: Health check failed after 60 seconds!"
+                docker logs ciris-billing-api --tail 50
+                exit 1
+              fi
+              echo "Waiting for API... (attempt $i/30)"
+              sleep 2
+            done
+
+            # Run migrations again if needed (container is now running)
+            echo "Ensuring migrations are up to date..."
+            docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic upgrade head'
+
+            echo "Deployment complete!"
+
+      - name: Verify Deployment
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: 149.28.120.73
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            # Check container status
+            echo "=== Container Status ==="
+            docker ps --filter name=billing --format "table {{.Names}}\t{{.Status}}"
+
+            # Check API health
+            echo -e "\n=== API Health Check ==="
+            curl -s http://localhost:8000/health | python3 -m json.tool || echo "Health check failed"
+
+            # Check current migration version
+            echo -e "\n=== Database Migration Version ==="
+            docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic current' || echo "Could not check migration version"
+
+            # Show recent logs
+            echo -e "\n=== Recent Logs ==="
+            docker logs ciris-billing-api --tail 20

@@ -4,12 +4,14 @@ FastAPI Dependencies - Authentication and authorization.
 NO DICTIONARIES - All dependencies return typed objects.
 """
 
-from fastapi import Header, Depends, HTTPException, status
+from collections.abc import Awaitable, Callable
+
+from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_write_db
-from app.services.api_key import APIKeyService, APIKeyData
-from app.exceptions import AuthenticationError, AuthorizationError
+from app.exceptions import AuthenticationError
+from app.services.api_key import APIKeyData, APIKeyService
 
 
 async def get_api_key(
@@ -47,7 +49,7 @@ async def get_api_key(
         ) from exc
 
 
-def require_permission(required_permission: str):
+def require_permission(required_permission: str) -> Callable[..., Awaitable[APIKeyData]]:
     """
     FastAPI dependency factory to check specific permission.
 

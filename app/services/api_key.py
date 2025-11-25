@@ -4,13 +4,13 @@ API Key Service - Generation and validation of agent API keys.
 NO DICTIONARIES - All data uses typed models/dataclasses.
 """
 
-import secrets
 import base64
-from datetime import datetime, timezone, timedelta
+import secrets
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError, InvalidHashError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
@@ -134,7 +134,7 @@ class APIKeyService:
         # Calculate expiration
         expires_at = None
         if expires_in_days is not None:
-            expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+            expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
 
         # Create database record
         api_key = APIKey(
@@ -197,9 +197,7 @@ class APIKeyService:
         key_prefix = provided_key[:20]
 
         # Look up by prefix
-        stmt = select(APIKey).where(
-            APIKey.key_prefix == key_prefix, APIKey.status == "active"
-        )
+        stmt = select(APIKey).where(APIKey.key_prefix == key_prefix, APIKey.status == "active")
         result = await self.db.execute(stmt)
         api_key = result.scalar_one_or_none()
 
@@ -215,18 +213,16 @@ class APIKeyService:
             raise AuthenticationError("Invalid API key")
 
         # Check expiration
-        if api_key.expires_at and datetime.now(timezone.utc) > api_key.expires_at:
+        if api_key.expires_at and datetime.now(UTC) > api_key.expires_at:
             # Auto-revoke expired key
             api_key.status = "revoked"
             await self.db.commit()
-            logger.warning(
-                "api_key_expired", key_id=str(api_key.id), expired_at=api_key.expires_at
-            )
+            logger.warning("api_key_expired", key_id=str(api_key.id), expired_at=api_key.expires_at)
             raise AuthenticationError("API key expired")
 
         # Update last_used_at (async, non-blocking if desired)
         if update_last_used:
-            api_key.last_used_at = datetime.now(timezone.utc)
+            api_key.last_used_at = datetime.now(UTC)
             # Note: Could make this async background task for performance
             await self.db.commit()
 
@@ -258,9 +254,7 @@ class APIKeyService:
 
         logger.info("api_key_revoked", key_id=str(key_id), name=api_key.name)
 
-    async def rotate_api_key(
-        self, key_id: UUID, grace_period_hours: int = 24
-    ) -> GeneratedAPIKey:
+    async def rotate_api_key(self, key_id: UUID, grace_period_hours: int = 24) -> GeneratedAPIKey:
         """
         Rotate an API key (create new, mark old as rotating).
 
@@ -282,23 +276,21 @@ class APIKeyService:
         # Create new key with same properties
         new_key = await self.create_api_key(
             name=old_key.name,
-            created_by=old_key.created_by,
+            created_by=old_key.created_by_id,
             environment=old_key.environment,
             description=old_key.description,
             permissions=old_key.permissions,
             expires_in_days=(
-                (old_key.expires_at - datetime.now(timezone.utc)).days
-                if old_key.expires_at
-                else None
+                (old_key.expires_at - datetime.now(UTC)).days if old_key.expires_at else None
             ),
         )
 
         # Mark old key as rotating (will be auto-revoked after grace period)
         old_key.status = "rotating"
-        old_key.metadata = {
+        old_key.key_metadata = {
             "rotated_to": str(new_key.key_id),
             "grace_period_until": (
-                datetime.now(timezone.utc) + timedelta(hours=grace_period_hours)
+                datetime.now(UTC) + timedelta(hours=grace_period_hours)
             ).isoformat(),
         }
         await self.db.commit()

@@ -5,8 +5,7 @@ Protected by JWT authentication. Requires OAuth login.
 Some routes require admin role, others allow viewer role.
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,8 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
 from app.api.admin_dependencies import get_current_admin, require_admin_role
+from app.db.models import Account, AdminUser, APIKey, Charge, Credit, ProviderConfig
 from app.db.session import get_read_db, get_write_db
-from app.db.models import APIKey, Account, AdminUser, Charge, Credit, ProviderConfig
 from app.services.api_key import APIKeyService
 
 logger = get_logger(__name__)
@@ -35,9 +34,9 @@ class UserResponse(BaseModel):
     account_id: UUID
     oauth_provider: str
     external_id: str
-    wa_id: Optional[str]
-    tenant_id: Optional[str]
-    customer_email: Optional[str]
+    wa_id: str | None
+    tenant_id: str | None
+    customer_email: str | None
     balance_minor: int
     paid_credits: int
     free_uses_remaining: int
@@ -46,8 +45,8 @@ class UserResponse(BaseModel):
     plan_name: str
     status: str
     created_at: datetime
-    last_charge_at: Optional[datetime]
-    last_credit_at: Optional[datetime]
+    last_charge_at: datetime | None
+    last_credit_at: datetime | None
     total_charged: int
     total_credited: int
     charge_count: int
@@ -74,9 +73,9 @@ class APIKeyResponse(BaseModel):
     permissions: list[str]
     status: str
     created_at: datetime
-    expires_at: Optional[datetime]
-    last_used_at: Optional[datetime]
-    created_by_email: Optional[str]
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    created_by_email: str | None
 
 
 class APIKeyCreateRequest(BaseModel):
@@ -88,7 +87,9 @@ class APIKeyCreateRequest(BaseModel):
         default=["billing:read", "billing:write"],
         description="Permissions for this key",
     )
-    expires_in_days: Optional[int] = Field(None, ge=1, le=3650, description="Expiration in days (max 10 years)")
+    expires_in_days: int | None = Field(
+        None, ge=1, le=3650, description="Expiration in days (max 10 years)"
+    )
 
 
 class APIKeyCreateResponse(BaseModel):
@@ -100,7 +101,7 @@ class APIKeyCreateResponse(BaseModel):
     plaintext_key: str = Field(..., description="SAVE THIS - It won't be shown again")
     environment: str
     permissions: list[str]
-    expires_at: Optional[datetime]
+    expires_at: datetime | None
     created_at: datetime
 
 
@@ -111,7 +112,9 @@ class APIKeyRotateResponse(BaseModel):
     name: str
     new_key_prefix: str
     new_plaintext_key: str = Field(..., description="SAVE THIS - It won't be shown again")
-    old_key_expires_at: datetime = Field(..., description="Old key will work until this time (24h grace)")
+    old_key_expires_at: datetime = Field(
+        ..., description="Old key will work until this time (24h grace)"
+    )
 
 
 class AnalyticsOverviewResponse(BaseModel):
@@ -147,15 +150,15 @@ class ProviderConfigResponse(BaseModel):
     id: UUID
     provider_name: str
     is_enabled: bool
-    config_data: dict
+    config_data: dict[str, str]
     updated_at: datetime
 
 
 class ProviderConfigUpdateRequest(BaseModel):
     """Update provider configuration."""
 
-    is_enabled: Optional[bool] = None
-    config_data: Optional[dict] = None
+    is_enabled: bool | None = None
+    config_data: dict[str, str] | None = None
 
 
 # ============================================================================
@@ -167,8 +170,8 @@ class ProviderConfigUpdateRequest(BaseModel):
 async def list_users(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
-    status_filter: Optional[str] = Query(None, description="Filter by status"),
-    search: Optional[str] = Query(None, description="Search by email or external_id"),
+    status_filter: str | None = Query(None, description="Filter by status"),
+    search: str | None = Query(None, description="Search by email or external_id"),
     db: AsyncSession = Depends(get_read_db),
     admin: AdminUser = Depends(get_current_admin),  # Both admin and viewer can view
 ) -> UserListResponse:
@@ -189,7 +192,8 @@ async def list_users(
     if search:
         search_pattern = f"%{search}%"
         stmt = stmt.where(
-            (Account.email.ilike(search_pattern)) | (Account.external_id.ilike(search_pattern))
+            (Account.customer_email.ilike(search_pattern))
+            | (Account.external_id.ilike(search_pattern))
         )
 
     # Get total count
@@ -213,10 +217,10 @@ async def list_users(
                 func.sum(
                     case(
                         (Charge.balance_before != Charge.balance_after, Charge.amount_minor),
-                        else_=0
+                        else_=0,
                     )
                 ),
-                0
+                0,
             ).label("total_charged"),
             func.max(Charge.created_at).label("last_charge_at"),
         ).where(Charge.account_id == account.id)
@@ -305,12 +309,9 @@ async def get_user(
         func.count(Charge.id).label("charge_count"),
         func.coalesce(
             func.sum(
-                case(
-                    (Charge.balance_before != Charge.balance_after, Charge.amount_minor),
-                    else_=0
-                )
+                case((Charge.balance_before != Charge.balance_after, Charge.amount_minor), else_=0)
             ),
-            0
+            0,
         ).label("total_charged"),
         func.max(Charge.created_at).label("last_charge_at"),
     ).where(Charge.account_id == account.id)
@@ -365,8 +366,8 @@ async def get_user(
 
 @router.get("/api-keys", response_model=list[APIKeyResponse])
 async def list_api_keys(
-    environment: Optional[str] = Query(None, pattern="^(test|live)$"),
-    status_filter: Optional[str] = Query(None, pattern="^(active|rotating|revoked)$"),
+    environment: str | None = Query(None, pattern="^(test|live)$"),
+    status_filter: str | None = Query(None, pattern="^(active|rotating|revoked)$"),
     db: AsyncSession = Depends(get_read_db),
     admin: AdminUser = Depends(get_current_admin),
 ) -> list[APIKeyResponse]:
@@ -504,19 +505,22 @@ async def rotate_api_key(
     try:
         rotation_data = await api_key_service.rotate_api_key(key_id)
 
+        # Calculate old key expiry (24-hour grace period from now)
+        old_key_expires_at = datetime.now(UTC) + timedelta(hours=24)
+
         logger.info(
             "admin_api_key_rotated",
             admin_email=admin.email,
             key_id=str(key_id),
-            new_key_id=str(rotation_data.new_key_id),
+            new_key_id=str(rotation_data.key_id),
         )
 
         return APIKeyRotateResponse(
-            id=rotation_data.new_key_id,
+            id=rotation_data.key_id,
             name=rotation_data.name,
-            new_key_prefix=rotation_data.new_key_prefix,
-            new_plaintext_key=rotation_data.new_plaintext_key,
-            old_key_expires_at=rotation_data.old_key_expires_at,
+            new_key_prefix=rotation_data.key_prefix,
+            new_plaintext_key=rotation_data.plaintext_key,
+            old_key_expires_at=old_key_expires_at,
         )
 
     except ValueError as e:
@@ -541,7 +545,7 @@ async def get_analytics_overview(
 
     Accessible by: admin, viewer
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     last_24h = now - timedelta(hours=24)
     last_7d = now - timedelta(days=7)
 
@@ -575,12 +579,9 @@ async def get_analytics_overview(
     total_charged_stmt = select(
         func.coalesce(
             func.sum(
-                case(
-                    (Charge.balance_before != Charge.balance_after, Charge.amount_minor),
-                    else_=0
-                )
+                case((Charge.balance_before != Charge.balance_after, Charge.amount_minor), else_=0)
             ),
-            0
+            0,
         )
     )
     total_charged_result = await db.execute(total_charged_stmt)
@@ -639,7 +640,7 @@ async def get_daily_analytics(
     # This is a simplified version - in production you'd want pre-aggregated data
     # in a separate analytics table for performance
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start_date = now - timedelta(days=days)
 
     # Get daily charge aggregates
@@ -762,7 +763,7 @@ async def update_provider_config(
         if request.config_data is not None:
             config.config_data = request.config_data
 
-        config.updated_at = datetime.now(timezone.utc)
+        config.updated_at = datetime.now(UTC)
         config.updated_by = admin.id
 
     await db.commit()

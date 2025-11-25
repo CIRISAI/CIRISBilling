@@ -16,6 +16,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
@@ -25,6 +26,11 @@ addopts = [
     "--strict-config",
     "--cov=app",
     "--cov-report=term-missing",
+    "-m", "not live and not integration",
+]
+markers = [
+    "live: marks tests as requiring live infrastructure (deselect with '-m \"not live\"')",
+    "integration: marks tests as integration tests requiring database (deselect with '-m \"not integration\"')",
 ]
 
 [tool.black]
@@ -35,6 +41,8 @@ include = '\.pyi?$'
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
@@ -44,7 +52,12 @@ select = [
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
 ]
-ignore = []
+ignore = [
+    "B008",  # Do not perform function call in argument defaults (FastAPI Depends pattern)
+    "E501",  # Line too long (handled by formatter, allow longer lines for readability)
+    "B904",  # Within except clause, raise with `from` (common logging pattern)
+    "UP038", # Use X | Y in isinstance (tuple is more readable)
+]
 
 [tool.mypy]
 python_version = "3.11"

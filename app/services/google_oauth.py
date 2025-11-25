@@ -4,7 +4,6 @@ Google OAuth provider for admin authentication.
 Adapted from CIRISManager implementation for CIRIS Billing.
 """
 
-from typing import Optional
 import httpx
 from structlog import get_logger
 
@@ -25,7 +24,7 @@ class GoogleOAuthProvider:
         client_id: str,
         client_secret: str,
         hd_domain: str = "ciris.ai",  # Restrict to @ciris.ai
-        http_client: Optional[httpx.AsyncClient] = None,
+        http_client: httpx.AsyncClient | None = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -80,7 +79,9 @@ class GoogleOAuthProvider:
             )
 
         except httpx.HTTPStatusError as e:
-            logger.error("token_exchange_failed", status=e.response.status_code, text=e.response.text)
+            logger.error(
+                "token_exchange_failed", status=e.response.status_code, text=e.response.text
+            )
             raise ValueError(f"Failed to exchange code: {e.response.status_code}")
         except Exception as e:
             logger.error("token_exchange_error", error=str(e))
@@ -90,8 +91,7 @@ class GoogleOAuthProvider:
         """Get user information from Google."""
         try:
             response = await self.http_client.get(
-                self.USERINFO_URL,
-                headers={"Authorization": f"Bearer {access_token}"}
+                self.USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"}
             )
             response.raise_for_status()
             user_data = response.json()
@@ -110,7 +110,9 @@ class GoogleOAuthProvider:
             )
 
         except httpx.HTTPStatusError as e:
-            logger.error("user_info_fetch_failed", status=e.response.status_code, text=e.response.text)
+            logger.error(
+                "user_info_fetch_failed", status=e.response.status_code, text=e.response.text
+            )
             raise ValueError(f"Failed to get user info: {e.response.status_code}")
         except ValueError:
             # Re-raise domain validation errors
