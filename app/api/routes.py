@@ -1182,12 +1182,13 @@ async def litellm_auth_check(
     # Generate interaction_id if not provided
     interaction_id = request.interaction_id or str(uuid4())
 
-    # User needs at least 1 credit (100 minor units = 1 credit)
-    has_credit = result.has_credit and (result.credits_remaining or 0) >= 100
+    # User needs at least 1 credit (paid_credits are already full credits, not minor units)
+    # Also check free_uses_remaining for free tier users
+    has_credit = result.has_credit  # Already considers both free_uses and paid_credits
 
     return LiteLLMAuthResponse(
         authorized=has_credit,
-        credits_remaining=(result.credits_remaining or 0) // 100,  # Convert to credits
+        credits_remaining=(result.credits_remaining or 0) + (result.free_uses_remaining or 0),
         reason=None if has_credit else "Insufficient credits",
         interaction_id=interaction_id,
     )
@@ -1225,7 +1226,7 @@ async def litellm_charge(
 
     intent = ChargeIntent(
         account_identity=identity,
-        amount_minor=100,  # 1 credit = 100 minor units
+        amount_minor=1,  # 1 credit (paid_credits stores whole credits, not minor units)
         currency="USD",
         description=f"LiteLLM interaction: {request.interaction_id}",
         metadata=ChargeMetadata(request_id=request.interaction_id),
@@ -1238,7 +1239,7 @@ async def litellm_charge(
         return LiteLLMChargeResponse(
             charged=True,
             credits_deducted=1,
-            credits_remaining=charge_data.balance_after // 100,  # Convert to credits
+            credits_remaining=charge_data.balance_after,  # Already whole credits
             charge_id=charge_data.charge_id,
         )
 
@@ -1253,7 +1254,7 @@ async def litellm_charge(
         return LiteLLMChargeResponse(
             charged=False,
             credits_deducted=0,
-            credits_remaining=exc.balance // 100,
+            credits_remaining=exc.balance,  # Already whole credits
             charge_id=None,
         )
 
