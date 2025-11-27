@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     stripe_publishable_key: str = ""  # Stripe publishable key (pk_test_... or pk_live_...)
 
     # Pricing Configuration
-    free_uses_per_account: int = 3
+    free_uses_per_account: int = 10  # Free interactions for new users
     paid_uses_per_purchase: int = 20
     price_per_purchase_minor: int = 500  # $5.00 in cents
 
