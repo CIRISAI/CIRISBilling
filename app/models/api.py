@@ -665,3 +665,62 @@ class LiteLLMUsageLogResponse(BaseModel):
 
     logged: bool = Field(..., description="Whether usage was logged")
     usage_log_id: UUID | None = Field(None, description="Usage log record ID")
+
+
+# ============================================================================
+# User-Facing Models (JWT/Google ID Token auth)
+# ============================================================================
+
+
+class UserBalanceResponse(BaseModel):
+    """
+    GET /v1/user/balance response.
+
+    Returns the user's current credit balance and account info.
+    Used by Android app to display credits to user.
+    """
+
+    # Matches what Android BillingApiClient expects
+    success: bool = Field(..., description="Whether the request succeeded")
+    balance: int = Field(..., description="Total available credits (free + paid)")
+    paid_credits: int = Field(0, description="Purchased credits remaining")
+    free_credits: int = Field(0, description="Free credits remaining")
+    email: str | None = Field(None, description="User's email address")
+
+
+class UserGooglePlayVerifyRequest(BaseModel):
+    """
+    POST /v1/user/google-play/verify request body.
+
+    User-facing version of GooglePlayVerifyRequest - identity comes from JWT token,
+    not from request body.
+    """
+
+    purchase_token: str = Field(..., min_length=10, max_length=4096)
+    product_id: str = Field(..., max_length=255)
+    package_name: str = Field(..., max_length=255)
+
+    @field_validator("purchase_token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        """Validate purchase token."""
+        if not v or len(v.strip()) < 10:
+            raise ValueError("Invalid purchase token")
+        return v.strip()
+
+
+class UserGooglePlayVerifyResponse(BaseModel):
+    """
+    POST /v1/user/google-play/verify response.
+
+    Matches what Android BillingApiClient.VerifyResponse expects:
+    - success (not verified)
+    - credits_added
+    - new_balance (not balance_after)
+    - already_processed
+    """
+
+    success: bool = Field(..., description="Whether verification succeeded")
+    credits_added: int = Field(0, description="Credits added from this purchase")
+    new_balance: int = Field(0, description="New total balance after purchase")
+    already_processed: bool = Field(False, description="Whether purchase was already processed")

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import require_permission
+from app.api.dependencies import UserIdentity, get_user_from_google_token, require_permission
 from app.db.session import get_read_db, get_write_db
 from app.exceptions import (
     AccountClosedError,
@@ -44,6 +44,9 @@ from app.models.api import (
     PurchaseResponse,
     TransactionItem,
     TransactionListResponse,
+    UserBalanceResponse,
+    UserGooglePlayVerifyRequest,
+    UserGooglePlayVerifyResponse,
 )
 from app.models.domain import AccountIdentity, ChargeIntent, CreditIntent
 from app.services.api_key import APIKeyData
@@ -1377,4 +1380,279 @@ async def health_check(db: AsyncSession = Depends(get_read_db)) -> HealthRespons
                 "error": str(exc),
                 "timestamp": datetime.now(UTC).isoformat(),
             },
+        ) from exc
+
+
+# =============================================================================
+# User-Facing Endpoints (Google ID Token auth - no API key required)
+# =============================================================================
+# These endpoints allow Android/mobile clients to authenticate using their
+# Google ID token directly, without embedding an API key in the APK.
+# The Google ID token is cryptographically signed by Google and verified
+# against Google's public keys.
+
+
+@router.get(
+    "/v1/user/balance",
+    response_model=UserBalanceResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_user_balance(
+    user: UserIdentity = Depends(get_user_from_google_token),
+    db: AsyncSession = Depends(get_read_db),
+) -> UserBalanceResponse:
+    """
+    Get the authenticated user's credit balance.
+
+    Auth: Bearer {google_id_token}
+
+    Used by Android app to display current credits to user.
+    """
+    from app.config import settings
+
+    service = BillingService(db)
+
+    identity = AccountIdentity(
+        oauth_provider=user.oauth_provider,
+        external_id=user.external_id,
+        wa_id=None,
+        tenant_id=None,
+    )
+
+    try:
+        account_data = await service.get_account(identity)
+
+        # Calculate total available credits
+        paid_credits = account_data.paid_credits
+        free_credits = account_data.free_uses_remaining
+        total = paid_credits + free_credits
+
+        return UserBalanceResponse(
+            success=True,
+            balance=total,
+            paid_credits=paid_credits,
+            free_credits=free_credits,
+            email=account_data.customer_email,
+        )
+
+    except AccountNotFoundError:
+        # New user - no account yet, show 0 balance
+        # Account will be created on first purchase or credit check
+        return UserBalanceResponse(
+            success=True,
+            balance=settings.free_uses_per_account,  # They'll get free credits on first use
+            paid_credits=0,
+            free_credits=settings.free_uses_per_account,
+            email=user.email,
+        )
+
+
+@router.post(
+    "/v1/user/google-play/verify",
+    response_model=UserGooglePlayVerifyResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def user_verify_google_play_purchase(
+    request: UserGooglePlayVerifyRequest,
+    user: UserIdentity = Depends(get_user_from_google_token),
+    db: AsyncSession = Depends(get_write_db),
+) -> UserGooglePlayVerifyResponse:
+    """
+    Verify a Google Play purchase and add credits to the authenticated user's account.
+
+    Auth: Bearer {google_id_token}
+
+    Flow:
+    1. Android app completes purchase via Google Play Billing Library
+    2. App receives purchase token
+    3. App calls this endpoint with token + Google ID token auth
+    4. Backend verifies purchase with Google Play Developer API
+    5. Backend consumes purchase (prevents reuse)
+    6. Backend credits user's account
+
+    Idempotent: Same purchase_token can be called multiple times safely.
+    """
+    from sqlalchemy import select
+    from structlog import get_logger
+
+    from app.db.models import GooglePlayPurchase
+    from app.exceptions import PaymentProviderError
+    from app.models.google_play import GooglePlayPurchaseToken
+    from app.services.google_play_products import get_credits_for_product
+    from app.services.google_play_provider import GooglePlayProvider
+    from app.services.provider_config import ProviderConfigService
+
+    logger = get_logger(__name__)
+
+    service = BillingService(db)
+
+    identity = AccountIdentity(
+        oauth_provider=user.oauth_provider,
+        external_id=user.external_id,
+        wa_id=None,
+        tenant_id=None,
+    )
+
+    # Check if purchase already processed (idempotency)
+    existing_stmt = select(GooglePlayPurchase).where(
+        GooglePlayPurchase.purchase_token == request.purchase_token
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing_purchase = existing_result.scalar_one_or_none()
+
+    if existing_purchase:
+        logger.info(
+            "google_play_purchase_already_processed",
+            order_id=existing_purchase.order_id,
+            credits_added=existing_purchase.credits_added,
+        )
+        # Get current account balance
+        try:
+            account_data = await service.get_account(identity)
+            new_balance = account_data.paid_credits + account_data.free_uses_remaining
+        except AccountNotFoundError:
+            new_balance = existing_purchase.credits_added
+
+        return UserGooglePlayVerifyResponse(
+            success=True,
+            credits_added=existing_purchase.credits_added,
+            new_balance=new_balance,
+            already_processed=True,
+        )
+
+    # Load Google Play config from database
+    config_service = ProviderConfigService(db)
+    google_play_config = await config_service.get_google_play_config()
+
+    if not google_play_config:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google Play provider not configured",
+        )
+
+    try:
+        # Initialize provider
+        provider = GooglePlayProvider(
+            service_account_json=google_play_config["service_account_json"],
+            package_name=google_play_config["package_name"],
+        )
+
+        # Verify purchase with Google Play
+        purchase_token = GooglePlayPurchaseToken(
+            token=request.purchase_token,
+            product_id=request.product_id,
+            package_name=request.package_name,
+        )
+        verification = await provider.verify_purchase(purchase_token)
+
+        # Validate purchase state
+        if not verification.is_valid():
+            logger.warning(
+                "google_play_purchase_invalid",
+                order_id=verification.order_id,
+                purchase_state=verification.purchase_state,
+            )
+            return UserGooglePlayVerifyResponse(
+                success=False,
+                credits_added=0,
+                new_balance=0,
+                already_processed=False,
+            )
+
+        # Get credits for product
+        try:
+            credits_to_add = get_credits_for_product(request.product_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        # Get or create account
+        account_data = await service.get_or_create_account(
+            identity=identity,
+            initial_balance_minor=0,
+            currency="USD",
+            plan_name="free",
+            customer_email=user.email,
+        )
+
+        # Add credits
+        await service.add_purchased_uses(
+            identity=identity,
+            uses_to_add=credits_to_add,
+            payment_id=verification.order_id,
+            amount_paid_minor=0,  # Google Play handles payment
+        )
+
+        # Get updated account
+        account_data = await service.get_account(identity)
+        new_balance = account_data.paid_credits + account_data.free_uses_remaining
+
+        # Record purchase for idempotency
+        purchase_record = GooglePlayPurchase(
+            account_id=account_data.account_id,
+            purchase_token=request.purchase_token,
+            order_id=verification.order_id,
+            product_id=request.product_id,
+            package_name=request.package_name,
+            purchase_time_millis=verification.purchase_time_millis,
+            purchase_state=verification.purchase_state,
+            acknowledged=False,
+            consumed=False,
+            credits_added=credits_to_add,
+        )
+        db.add(purchase_record)
+
+        # Consume purchase (prevents reuse)
+        try:
+            await provider.consume_purchase(
+                purchase_token=request.purchase_token,
+                product_id=request.product_id,
+            )
+            purchase_record.consumed = True
+            purchase_record.acknowledged = True
+        except PaymentProviderError as exc:
+            logger.error(
+                "google_play_consume_failed",
+                order_id=verification.order_id,
+                error=str(exc),
+            )
+            # Don't fail - credits are already added
+
+        await db.commit()
+
+        logger.info(
+            "google_play_purchase_verified",
+            order_id=verification.order_id,
+            product_id=request.product_id,
+            credits_added=credits_to_add,
+            account_id=str(account_data.account_id),
+        )
+
+        return UserGooglePlayVerifyResponse(
+            success=True,
+            credits_added=credits_to_add,
+            new_balance=new_balance,
+            already_processed=False,
+        )
+
+    except PaymentProviderError as exc:
+        logger.error("google_play_verification_failed", error=str(exc))
+        return UserGooglePlayVerifyResponse(
+            success=False,
+            credits_added=0,
+            new_balance=0,
+            already_processed=False,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        logger.exception("google_play_verification_unexpected_error")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
         ) from exc
