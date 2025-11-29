@@ -4,7 +4,7 @@ Billing Service - Core business logic with write verification.
 NO DICTIONARIES - All operations use strongly typed domain models.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -40,6 +40,20 @@ from app.models.domain import (
 def _utc_now() -> datetime:
     """Get current UTC timestamp."""
     return datetime.now(UTC)
+
+
+def _get_next_reset_time() -> datetime:
+    """Get the next daily reset time (midnight UTC)."""
+    now = _utc_now()
+    tomorrow = now.date() + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=UTC)
+
+
+def _should_reset_daily_uses(reset_at: datetime | None) -> bool:
+    """Check if daily free uses should be reset."""
+    if reset_at is None:
+        return True
+    return _utc_now() >= reset_at
 
 
 class BillingService:
@@ -134,6 +148,8 @@ class BillingService:
                 reason="Account suspended",
                 free_uses_remaining=account.free_uses_remaining,
                 total_uses=account.total_uses,
+                daily_free_uses_remaining=0,
+                daily_free_uses_limit=account.daily_free_uses_limit,
             )
 
         # Account closed
@@ -145,15 +161,28 @@ class BillingService:
                 reason="Account closed",
                 free_uses_remaining=account.free_uses_remaining,
                 total_uses=account.total_uses,
+                daily_free_uses_remaining=0,
+                daily_free_uses_limit=account.daily_free_uses_limit,
             )
 
-        # Check if account has credit (free uses OR paid credits)
+        # Reset daily uses if needed
+        daily_free_uses = account.daily_free_uses_remaining
+        if _should_reset_daily_uses(account.daily_free_uses_reset_at):
+            daily_free_uses = account.daily_free_uses_limit
+            # Update the account with reset values (will be saved lazily)
+            account.daily_free_uses_remaining = daily_free_uses
+            account.daily_free_uses_reset_at = _get_next_reset_time()
+            await self.session.flush()
+            await self.session.commit()
+
+        # Check if account has credit (daily free, one-time free, or paid)
+        has_daily_free = daily_free_uses > 0
         has_free_uses = account.free_uses_remaining > 0
         has_paid_credits = account.paid_credits > 0
-        has_credit = has_free_uses or has_paid_credits
+        has_credit = has_daily_free or has_free_uses or has_paid_credits
 
         # Determine if purchase is required
-        purchase_required = not has_free_uses and not has_paid_credits
+        purchase_required = not has_daily_free and not has_free_uses and not has_paid_credits
 
         return CreditCheckResponse(
             has_credit=has_credit,
@@ -165,6 +194,8 @@ class BillingService:
             purchase_required=purchase_required,
             purchase_price_minor=settings.price_per_purchase_minor if purchase_required else None,
             purchase_uses=settings.paid_uses_per_purchase if purchase_required else None,
+            daily_free_uses_remaining=daily_free_uses,
+            daily_free_uses_limit=account.daily_free_uses_limit,
         )
 
     async def create_charge(self, intent: ChargeIntent) -> ChargeData:
@@ -209,24 +240,34 @@ class BillingService:
                 f"Currency mismatch: account={account.currency}, charge={intent.currency}"
             )
 
-        # Determine if using free use or paid credit
-        using_free_use = account.free_uses_remaining > 0
+        # Reset daily uses if needed (before checking availability)
+        if _should_reset_daily_uses(account.daily_free_uses_reset_at):
+            account.daily_free_uses_remaining = account.daily_free_uses_limit
+            account.daily_free_uses_reset_at = _get_next_reset_time()
 
-        if using_free_use:
-            # Use free tier - don't charge paid credits
-            credits_before = account.paid_credits
-            credits_after = credits_before  # Paid credits unchanged for free use
-            free_uses_before = account.free_uses_remaining
+        # Determine what type of credit to use (priority: daily free > one-time free > paid)
+        using_daily_free = account.daily_free_uses_remaining > 0
+        using_free_use = not using_daily_free and account.free_uses_remaining > 0
+
+        # Track what gets deducted
+        daily_free_before = account.daily_free_uses_remaining
+        daily_free_after = daily_free_before
+        free_uses_before = account.free_uses_remaining
+        free_uses_after = free_uses_before
+        credits_before = account.paid_credits
+        credits_after = credits_before
+
+        if using_daily_free:
+            # Use daily free - don't charge anything else
+            daily_free_after = daily_free_before - 1
+        elif using_free_use:
+            # Use one-time free tier - don't charge paid credits
             free_uses_after = free_uses_before - 1
         else:
             # Use paid credits - deduct from paid_credits
             if account.paid_credits < intent.amount_minor:
                 raise InsufficientCreditsError(account.paid_credits, intent.amount_minor)
-
-            credits_before = account.paid_credits
             credits_after = credits_before - intent.amount_minor
-            free_uses_before = 0
-            free_uses_after = 0
 
         # Create charge record
         charge = Charge(
@@ -251,10 +292,10 @@ class BillingService:
         if verified_charge is None:
             raise WriteVerificationError(f"Charge {charge.id} not found after insert")
 
-        # Update account paid credits, free uses, and total uses
+        # Update account balances and total uses
         account.paid_credits = credits_after
-        if using_free_use:
-            account.free_uses_remaining = free_uses_after
+        account.free_uses_remaining = free_uses_after
+        account.daily_free_uses_remaining = daily_free_after
         account.total_uses = account.total_uses + 1
         await self.session.flush()
 
@@ -268,9 +309,14 @@ class BillingService:
                 f"Paid credits mismatch: expected {credits_after}, got {verified_account.paid_credits}"
             )
 
-        if using_free_use and verified_account.free_uses_remaining != free_uses_after:
+        if verified_account.free_uses_remaining != free_uses_after:
             raise DataIntegrityError(
                 f"Free uses mismatch: expected {free_uses_after}, got {verified_account.free_uses_remaining}"
+            )
+
+        if verified_account.daily_free_uses_remaining != daily_free_after:
+            raise DataIntegrityError(
+                f"Daily free uses mismatch: expected {daily_free_after}, got {verified_account.daily_free_uses_remaining}"
             )
 
         # Commit transaction
@@ -665,6 +711,13 @@ class BillingService:
 
     def _account_to_domain(self, account: Account) -> AccountData:
         """Convert ORM account to domain model."""
+        # Check if daily free uses need reset
+        daily_free_uses = account.daily_free_uses_remaining
+        daily_reset_at = account.daily_free_uses_reset_at
+        if _should_reset_daily_uses(daily_reset_at):
+            daily_free_uses = account.daily_free_uses_limit
+            daily_reset_at = _get_next_reset_time()
+
         return AccountData(
             account_id=account.id,
             oauth_provider=account.oauth_provider,
@@ -682,4 +735,8 @@ class BillingService:
             marketing_opt_in_source=account.marketing_opt_in_source,
             created_at=account.created_at,
             updated_at=account.updated_at,
+            free_uses_remaining=account.free_uses_remaining,
+            daily_free_uses_remaining=daily_free_uses,
+            daily_free_uses_limit=account.daily_free_uses_limit,
+            daily_free_uses_reset_at=daily_reset_at,
         )

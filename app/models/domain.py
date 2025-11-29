@@ -107,6 +107,12 @@ class AccountData:
     marketing_opt_in_source: str | None
     created_at: datetime
     updated_at: datetime
+    # Free uses (one-time signup bonus)
+    free_uses_remaining: int = 0
+    # Daily free uses
+    daily_free_uses_remaining: int = 0
+    daily_free_uses_limit: int = 2
+    daily_free_uses_reset_at: datetime | None = None
 
     def to_identity(self) -> AccountIdentity:
         """Convert to AccountIdentity."""

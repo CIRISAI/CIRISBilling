@@ -67,9 +67,16 @@ class Account(Base):
     # Plan
     plan_name: Mapped[str] = mapped_column(String(100), nullable=False, default="free")
 
-    # Usage tracking for free tier
+    # Usage tracking for free tier (one-time signup bonus)
     free_uses_remaining: Mapped[int] = mapped_column(BigInteger, nullable=False, default=3)
     total_uses: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    # Daily free uses (resets each day)
+    daily_free_uses_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    daily_free_uses_reset_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    daily_free_uses_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
 
     # Paid credits (purchased uses)
     paid_credits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
@@ -105,6 +112,8 @@ class Account(Base):
         CheckConstraint("free_uses_remaining >= 0", name="ck_free_uses_non_negative"),
         CheckConstraint("total_uses >= 0", name="ck_total_uses_non_negative"),
         CheckConstraint("paid_credits >= 0", name="ck_paid_credits_non_negative"),
+        CheckConstraint("daily_free_uses_remaining >= 0", name="ck_daily_free_uses_non_negative"),
+        CheckConstraint("daily_free_uses_limit > 0", name="ck_daily_free_uses_limit_positive"),
         UniqueConstraint(
             "oauth_provider",
             "external_id",

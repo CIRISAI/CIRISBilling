@@ -95,6 +95,9 @@ class CreditCheckResponse(BaseModel):
     purchase_required: bool = False
     purchase_price_minor: int | None = None
     purchase_uses: int | None = None
+    # Daily free uses (resets each day)
+    daily_free_uses_remaining: int | None = None
+    daily_free_uses_limit: int | None = None
 
 
 # ============================================================================
@@ -682,9 +685,11 @@ class UserBalanceResponse(BaseModel):
 
     # Matches what Android BillingApiClient expects
     success: bool = Field(..., description="Whether the request succeeded")
-    balance: int = Field(..., description="Total available credits (free + paid)")
+    balance: int = Field(..., description="Total available credits (free + paid + daily)")
     paid_credits: int = Field(0, description="Purchased credits remaining")
-    free_credits: int = Field(0, description="Free credits remaining")
+    free_credits: int = Field(0, description="One-time signup bonus credits remaining")
+    daily_free_uses_remaining: int = Field(0, description="Daily free uses left today")
+    daily_free_uses_limit: int = Field(2, description="Maximum daily free uses")
     email: str | None = Field(None, description="User's email address")
 
 

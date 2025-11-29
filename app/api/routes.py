@@ -1422,27 +1422,32 @@ async def get_user_balance(
     try:
         account_data = await service.get_account(identity)
 
-        # Calculate total available credits
+        # Calculate total available credits (daily free + one-time free + paid)
         paid_credits = account_data.paid_credits
         free_credits = account_data.free_uses_remaining
-        total = paid_credits + free_credits
+        daily_free = account_data.daily_free_uses_remaining
+        total = paid_credits + free_credits + daily_free
 
         return UserBalanceResponse(
             success=True,
             balance=total,
             paid_credits=paid_credits,
             free_credits=free_credits,
+            daily_free_uses_remaining=daily_free,
+            daily_free_uses_limit=account_data.daily_free_uses_limit,
             email=account_data.customer_email,
         )
 
     except AccountNotFoundError:
-        # New user - no account yet, show 0 balance
+        # New user - no account yet, show what they'll get on first use
         # Account will be created on first purchase or credit check
         return UserBalanceResponse(
             success=True,
-            balance=settings.free_uses_per_account,  # They'll get free credits on first use
+            balance=settings.free_uses_per_account + 2,  # One-time + daily free
             paid_credits=0,
             free_credits=settings.free_uses_per_account,
+            daily_free_uses_remaining=2,
+            daily_free_uses_limit=2,
             email=user.email,
         )
 

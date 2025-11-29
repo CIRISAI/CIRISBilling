@@ -4,7 +4,7 @@ Tests for BillingService - Integration tests requiring database.
 Run with: pytest -m integration
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -30,6 +30,9 @@ def create_mock_account(
     paid_credits: int = 0,
     free_uses_remaining: int = 3,
     status: str = "active",
+    daily_free_uses_remaining: int = 0,
+    daily_free_uses_limit: int = 2,
+    daily_free_uses_reset_at: datetime | None = None,
 ) -> MagicMock:
     """Create a mock Account with given parameters."""
     account = MagicMock(spec=Account)
@@ -46,6 +49,9 @@ def create_mock_account(
     account.free_uses_remaining = free_uses_remaining
     account.total_uses = 0
     account.paid_credits = paid_credits
+    account.daily_free_uses_remaining = daily_free_uses_remaining
+    account.daily_free_uses_limit = daily_free_uses_limit
+    account.daily_free_uses_reset_at = daily_free_uses_reset_at
     account.marketing_opt_in = False
     account.marketing_opt_in_at = None
     account.marketing_opt_in_source = None
@@ -125,9 +131,15 @@ class TestCreditCheck:
     async def test_credit_check_no_credits(
         self, db_session: AsyncMock, test_account_identity: AccountIdentity
     ) -> None:
-        """Test credit check with no free uses or paid credits."""
+        """Test credit check with no free uses, daily uses, or paid credits."""
+        # Set reset time in the future so daily uses don't get reset
+        future_reset = datetime.now(UTC) + timedelta(hours=12)
         mock_account = create_mock_account(
-            test_account_identity, free_uses_remaining=0, paid_credits=0
+            test_account_identity,
+            free_uses_remaining=0,
+            paid_credits=0,
+            daily_free_uses_remaining=0,
+            daily_free_uses_reset_at=future_reset,
         )
 
         service = BillingService(db_session)
@@ -181,11 +193,13 @@ class TestChargeCreation:
 
         service = BillingService(db_session)
 
-        with patch.object(service, "_check_idempotency", new_callable=AsyncMock) as mock_idemp:
+        with patch.object(
+            service, "_find_charge_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
             mock_idemp.return_value = None  # No existing charge
 
             with patch.object(
-                service, "_get_account_for_update", new_callable=AsyncMock
+                service, "_lock_account_for_update", new_callable=AsyncMock
             ) as mock_get:
                 mock_get.return_value = mock_account
 
@@ -218,11 +232,13 @@ class TestChargeCreation:
 
         service = BillingService(db_session)
 
-        with patch.object(service, "_check_idempotency", new_callable=AsyncMock) as mock_idemp:
+        with patch.object(
+            service, "_find_charge_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
             mock_idemp.return_value = None
 
             with patch.object(
-                service, "_get_account_for_update", new_callable=AsyncMock
+                service, "_lock_account_for_update", new_callable=AsyncMock
             ) as mock_get:
                 mock_get.return_value = mock_account
 
@@ -248,11 +264,13 @@ class TestChargeCreation:
         """Test charge creation for non-existent account."""
         service = BillingService(db_session)
 
-        with patch.object(service, "_check_idempotency", new_callable=AsyncMock) as mock_idemp:
+        with patch.object(
+            service, "_find_charge_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
             mock_idemp.return_value = None
 
             with patch.object(
-                service, "_get_account_for_update", new_callable=AsyncMock
+                service, "_lock_account_for_update", new_callable=AsyncMock
             ) as mock_get:
                 mock_get.return_value = None  # Account not found
 
@@ -278,11 +296,13 @@ class TestChargeCreation:
 
         service = BillingService(db_session)
 
-        with patch.object(service, "_check_idempotency", new_callable=AsyncMock) as mock_idemp:
+        with patch.object(
+            service, "_find_charge_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
             mock_idemp.return_value = None
 
             with patch.object(
-                service, "_get_account_for_update", new_callable=AsyncMock
+                service, "_lock_account_for_update", new_callable=AsyncMock
             ) as mock_get:
                 mock_get.return_value = mock_account
 
@@ -310,7 +330,9 @@ class TestChargeCreation:
 
         service = BillingService(db_session)
 
-        with patch.object(service, "_check_idempotency", new_callable=AsyncMock) as mock_idemp:
+        with patch.object(
+            service, "_find_charge_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
             mock_idemp.return_value = existing_charge  # Existing charge found
 
             intent = ChargeIntent(
@@ -340,12 +362,12 @@ class TestCreditAddition:
         service = BillingService(db_session)
 
         with patch.object(
-            service, "_check_credit_idempotency", new_callable=AsyncMock
+            service, "_find_credit_by_idempotency", new_callable=AsyncMock
         ) as mock_idemp:
             mock_idemp.return_value = None
 
             with patch.object(
-                service, "_get_account_for_update", new_callable=AsyncMock
+                service, "_lock_account_for_update", new_callable=AsyncMock
             ) as mock_get:
                 mock_get.return_value = mock_account
 
@@ -373,12 +395,12 @@ class TestCreditAddition:
         service = BillingService(db_session)
 
         with patch.object(
-            service, "_check_credit_idempotency", new_callable=AsyncMock
+            service, "_find_credit_by_idempotency", new_callable=AsyncMock
         ) as mock_idemp:
             mock_idemp.return_value = None
 
             with patch.object(
-                service, "_get_account_for_update", new_callable=AsyncMock
+                service, "_lock_account_for_update", new_callable=AsyncMock
             ) as mock_get:
                 mock_get.return_value = None
 
