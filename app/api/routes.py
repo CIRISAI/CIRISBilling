@@ -10,7 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import UserIdentity, get_user_from_google_token, require_permission
+from app.api.dependencies import (
+    CombinedAuth,
+    UserIdentity,
+    get_user_from_google_token,
+    require_permission,
+    require_permission_or_jwt,
+)
 from app.db.session import get_read_db, get_write_db
 from app.exceptions import (
     AccountClosedError,
@@ -34,17 +40,12 @@ from app.models.api import (
     GooglePlayVerifyRequest,
     GooglePlayVerifyResponse,
     HealthResponse,
-    LiteLLMAuthRequest,
-    LiteLLMAuthResponse,
-    LiteLLMChargeRequest,
-    LiteLLMChargeResponse,
     LiteLLMUsageLogRequest,
     LiteLLMUsageLogResponse,
     PurchaseRequest,
     PurchaseResponse,
     TransactionItem,
     TransactionListResponse,
-    UserBalanceResponse,
     UserGooglePlayVerifyRequest,
     UserGooglePlayVerifyResponse,
 )
@@ -59,7 +60,7 @@ router = APIRouter()
 async def check_credit(
     request: CreditCheckRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:read")),
+    auth: CombinedAuth = Depends(require_permission_or_jwt("billing:read")),
 ) -> CreditCheckResponse:
     """
     Check if account has sufficient credits.
@@ -67,16 +68,28 @@ async def check_credit(
     Auto-creates new accounts with free credits on first check.
     Updates account metadata if provided for existing accounts.
     Write operation - requires primary database.
-    Requires: API key with billing:read permission.
+
+    Auth: API key with billing:read permission OR Bearer {google_id_token}
+
+    When using JWT auth, oauth_provider and external_id are extracted from the token.
     """
     service = BillingService(db)
 
-    identity = AccountIdentity(
-        oauth_provider=request.oauth_provider,
-        external_id=request.external_id,
-        wa_id=request.wa_id,
-        tenant_id=request.tenant_id,
-    )
+    # If JWT auth, use identity from token; otherwise use request body
+    if auth.auth_type == "jwt" and auth.user:
+        identity = AccountIdentity(
+            oauth_provider=auth.user.oauth_provider,
+            external_id=auth.user.external_id,
+            wa_id=request.wa_id if request else None,
+            tenant_id=request.tenant_id if request else None,
+        )
+    else:
+        identity = AccountIdentity(
+            oauth_provider=request.oauth_provider,
+            external_id=request.external_id,
+            wa_id=request.wa_id,
+            tenant_id=request.tenant_id,
+        )
 
     # First check credit (creates account if needed)
     result = await service.check_credit(
@@ -94,6 +107,7 @@ async def check_credit(
     await service.update_account_metadata(
         identity=identity,
         customer_email=request.customer_email,
+        display_name=request.display_name,
         marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
         marketing_opt_in_source=request.marketing_opt_in_source,
         user_role=request.user_role,
@@ -132,6 +146,7 @@ async def create_charge(
     await service.update_account_metadata(
         identity=identity,
         customer_email=request.customer_email,
+        display_name=request.display_name,
         marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
         marketing_opt_in_source=request.marketing_opt_in_source,
         user_role=request.user_role,
@@ -228,6 +243,7 @@ async def add_credits(
     await service.update_account_metadata(
         identity=identity,
         customer_email=request.customer_email,
+        display_name=request.display_name,
         marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
         marketing_opt_in_source=request.marketing_opt_in_source,
         user_role=request.user_role,
@@ -340,6 +356,7 @@ async def create_purchase(
             currency="USD",
             plan_name="free",
             customer_email=request.customer_email,
+            display_name=request.display_name,
             marketing_opt_in=request.marketing_opt_in,
             marketing_opt_in_source=request.marketing_opt_in_source,
             user_role=request.user_role,
@@ -497,6 +514,7 @@ async def create_or_update_account(
             currency=request.currency,
             plan_name=request.plan_name,
             customer_email=request.customer_email,
+            display_name=request.display_name,
             marketing_opt_in=request.marketing_opt_in,
             marketing_opt_in_source=request.marketing_opt_in_source,
             user_role=request.user_role,
@@ -858,6 +876,7 @@ async def verify_google_play_purchase(
             currency="USD",
             plan_name="free",
             customer_email=request.customer_email,
+            display_name=request.display_name,
             marketing_opt_in=request.marketing_opt_in,
             marketing_opt_in_source=request.marketing_opt_in_source,
             user_role=request.user_role,
@@ -1149,132 +1168,35 @@ async def list_transactions(
 # ============================================================================
 # LiteLLM Proxy Integration Endpoints
 # ============================================================================
-
-
-@router.post("/v1/billing/litellm/auth", response_model=LiteLLMAuthResponse)
-async def litellm_auth_check(
-    request: LiteLLMAuthRequest,
-    db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:read")),
-) -> LiteLLMAuthResponse:
-    """
-    LiteLLM pre-request authorization check.
-
-    Called by LiteLLM proxy before allowing an interaction.
-    Checks if user has at least 1 credit available.
-
-    Returns:
-        authorized: True if user has >= 1 credit
-        credits_remaining: Current balance (before potential charge)
-        interaction_id: Echo back or generate for tracking
-    """
-    from uuid import uuid4
-
-    service = BillingService(db)
-
-    identity = AccountIdentity(
-        oauth_provider=request.oauth_provider,
-        external_id=request.external_id,
-        wa_id=None,
-        tenant_id=None,
-    )
-
-    # Check credit (this also creates account if it doesn't exist)
-    result = await service.check_credit(identity, context=None)
-
-    # Generate interaction_id if not provided
-    interaction_id = request.interaction_id or str(uuid4())
-
-    # User needs at least 1 credit (paid_credits are already full credits, not minor units)
-    # Also check free_uses_remaining for free tier users
-    has_credit = result.has_credit  # Already considers both free_uses and paid_credits
-
-    return LiteLLMAuthResponse(
-        authorized=has_credit,
-        credits_remaining=(result.credits_remaining or 0) + (result.free_uses_remaining or 0),
-        reason=None if has_credit else "Insufficient credits",
-        interaction_id=interaction_id,
-    )
+# NOTE: /v1/billing/litellm/auth and /v1/billing/litellm/charge were removed
+# as redundant. Use these endpoints instead:
+#   - Auth check: POST /v1/billing/credits/check (supports API key or JWT)
+#   - Charge: POST /v1/billing/charges (API key required)
+# The /v1/billing/litellm/usage endpoint remains for LLM cost analytics.
 
 
 @router.post(
-    "/v1/billing/litellm/charge",
-    response_model=LiteLLMChargeResponse,
-    status_code=status.HTTP_201_CREATED,
+    "/v1/billing/litellm/usage/debug",
+    status_code=status.HTTP_200_OK,
 )
-async def litellm_charge(
-    request: LiteLLMChargeRequest,
-    db: AsyncSession = Depends(get_write_db),
+async def litellm_log_usage_debug(
+    request: Request,
     api_key: APIKeyData = Depends(require_permission("billing:write")),
-) -> LiteLLMChargeResponse:
-    """
-    LiteLLM post-interaction charge.
+) -> dict:
+    """Debug endpoint to capture raw request body."""
+    from structlog import get_logger
 
-    Called by LiteLLM proxy after a successful interaction completes.
-    Deducts exactly 1 credit (100 minor units) per interaction.
-
-    Uses idempotency_key (defaults to interaction_id) to prevent double-charging.
-    """
-    service = BillingService(db)
-
-    identity = AccountIdentity(
-        oauth_provider=request.oauth_provider,
-        external_id=request.external_id,
-        wa_id=None,
-        tenant_id=None,
-    )
-
-    # Use interaction_id as default idempotency key
-    idempotency_key = request.idempotency_key or f"litellm:{request.interaction_id}"
-
-    intent = ChargeIntent(
-        account_identity=identity,
-        amount_minor=1,  # 1 credit (paid_credits stores whole credits, not minor units)
-        currency="USD",
-        description=f"LiteLLM interaction: {request.interaction_id}",
-        metadata=ChargeMetadata(request_id=request.interaction_id),
-        idempotency_key=idempotency_key,
-    )
-
+    logger = get_logger(__name__)
+    body = await request.body()
     try:
-        charge_data = await service.create_charge(intent)
+        import json
 
-        return LiteLLMChargeResponse(
-            charged=True,
-            credits_deducted=1,
-            credits_remaining=charge_data.balance_after,  # Already whole credits
-            charge_id=charge_data.charge_id,
-        )
-
-    except AccountNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
-        )
-
-    except InsufficientCreditsError as exc:
-        # Return success=False instead of error for idempotent handling
-        return LiteLLMChargeResponse(
-            charged=False,
-            credits_deducted=0,
-            credits_remaining=exc.balance,  # Already whole credits
-            charge_id=None,
-        )
-
-    except IdempotencyConflictError as exc:
-        # Already charged - return success (idempotent)
-        return LiteLLMChargeResponse(
-            charged=True,
-            credits_deducted=1,
-            credits_remaining=0,  # Unknown, but charge was successful
-            charge_id=exc.existing_id,
-        )
-
-    except (AccountSuspendedError, AccountClosedError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
-        )
+        parsed = json.loads(body)
+        logger.info("usage_debug_received", body=parsed)
+        return {"received": parsed, "body_length": len(body)}
+    except Exception as e:
+        logger.error("usage_debug_parse_error", error=str(e), raw_body=body.decode()[:500])
+        return {"error": str(e), "raw_body": body.decode()[:500]}
 
 
 @router.post(
@@ -1390,66 +1312,10 @@ async def health_check(db: AsyncSession = Depends(get_read_db)) -> HealthRespons
 # Google ID token directly, without embedding an API key in the APK.
 # The Google ID token is cryptographically signed by Google and verified
 # against Google's public keys.
-
-
-@router.get(
-    "/v1/user/balance",
-    response_model=UserBalanceResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def get_user_balance(
-    user: UserIdentity = Depends(get_user_from_google_token),
-    db: AsyncSession = Depends(get_read_db),
-) -> UserBalanceResponse:
-    """
-    Get the authenticated user's credit balance.
-
-    Auth: Bearer {google_id_token}
-
-    Used by Android app to display current credits to user.
-    """
-    from app.config import settings
-
-    service = BillingService(db)
-
-    identity = AccountIdentity(
-        oauth_provider=user.oauth_provider,
-        external_id=user.external_id,
-        wa_id=None,
-        tenant_id=None,
-    )
-
-    try:
-        account_data = await service.get_account(identity)
-
-        # Calculate total available credits (daily free + one-time free + paid)
-        paid_credits = account_data.paid_credits
-        free_credits = account_data.free_uses_remaining
-        daily_free = account_data.daily_free_uses_remaining
-        total = paid_credits + free_credits + daily_free
-
-        return UserBalanceResponse(
-            success=True,
-            balance=total,
-            paid_credits=paid_credits,
-            free_credits=free_credits,
-            daily_free_uses_remaining=daily_free,
-            daily_free_uses_limit=account_data.daily_free_uses_limit,
-            email=account_data.customer_email,
-        )
-
-    except AccountNotFoundError:
-        # New user - no account yet, show what they'll get on first use
-        # Account will be created on first purchase or credit check
-        return UserBalanceResponse(
-            success=True,
-            balance=settings.free_uses_per_account + 2,  # One-time + daily free
-            paid_credits=0,
-            free_credits=settings.free_uses_per_account,
-            daily_free_uses_remaining=2,
-            daily_free_uses_limit=2,
-            email=user.email,
-        )
+#
+# NOTE: GET /v1/user/balance was removed as redundant.
+# Use POST /v1/billing/credits/check with Bearer {google_id_token} instead.
+# It accepts JWT auth and returns the same balance information.
 
 
 @router.post(
@@ -1580,6 +1446,7 @@ async def user_verify_google_play_purchase(
             currency="USD",
             plan_name="free",
             customer_email=user.email,
+            display_name=user.name,
         )
 
         # Add credits
@@ -1661,3 +1528,190 @@ async def user_verify_google_play_purchase(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error",
         ) from exc
+
+
+# =============================================================================
+# Play Integrity API Endpoints
+# =============================================================================
+# These endpoints provide Play Integrity verification for high-security operations.
+# Use this to verify the Android app is genuine and running on a trusted device.
+#
+# Flow:
+# 1. App calls GET /v1/integrity/nonce to get a nonce
+# 2. App requests integrity token from Google with the nonce
+# 3. App calls POST /v1/integrity/verify with the token
+# 4. For combined auth+integrity, use POST /v1/integrity/auth
+
+
+@router.get(
+    "/v1/integrity/nonce",
+    status_code=status.HTTP_200_OK,
+)
+async def get_integrity_nonce(
+    context: str | None = None,
+) -> dict:
+    """
+    Get a nonce for Play Integrity verification.
+
+    The nonce is:
+    - Cryptographically secure
+    - Single-use (consumed on verification)
+    - Short-lived (expires in 5 minutes)
+
+    Args:
+        context: Optional context (e.g., "purchase", "login", "credit_check")
+
+    Returns:
+        nonce: Base64 URL-safe encoded nonce
+        expires_at: When this nonce expires
+    """
+    from app.config import settings
+    from app.services.play_integrity import PlayIntegrityConfig, PlayIntegrityService
+
+    # Initialize service (doesn't require service account for nonce generation)
+    config = PlayIntegrityConfig(
+        package_name=settings.ANDROID_PACKAGE_NAME or "ai.ciris.agent",
+    )
+    service = PlayIntegrityService(config)
+
+    nonce, expires_at = service.generate_nonce(context=context)
+
+    return {
+        "nonce": nonce,
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+@router.post(
+    "/v1/integrity/verify",
+    status_code=status.HTTP_200_OK,
+)
+async def verify_integrity(
+    integrity_token: str,
+    nonce: str,
+) -> dict:
+    """
+    Verify a Play Integrity token.
+
+    This endpoint decodes the integrity token using Google's API
+    and returns the device/app/account verdicts.
+
+    Args:
+        integrity_token: The encrypted token from Android
+        nonce: The nonce that was used to request this token
+
+    Returns:
+        verified: Whether integrity check passed
+        device_integrity: Device verdicts (MEETS_BASIC_INTEGRITY, etc.)
+        app_integrity: App verdict (PLAY_RECOGNIZED, etc.)
+        account_details: Licensing verdict
+    """
+    from app.config import settings
+    from app.services.play_integrity import PlayIntegrityConfig, PlayIntegrityService
+
+    if not settings.PLAY_INTEGRITY_SERVICE_ACCOUNT:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Play Integrity API not configured",
+        )
+
+    config = PlayIntegrityConfig(
+        package_name=settings.ANDROID_PACKAGE_NAME or "ai.ciris.agent",
+        service_account_json=settings.PLAY_INTEGRITY_SERVICE_ACCOUNT,
+    )
+    service = PlayIntegrityService(config)
+
+    result = await service.verify_token(integrity_token, nonce)
+
+    return result.model_dump()
+
+
+@router.post(
+    "/v1/integrity/auth",
+    status_code=status.HTTP_200_OK,
+)
+async def verify_integrity_with_auth(
+    integrity_token: str,
+    nonce: str,
+    user: UserIdentity = Depends(get_user_from_google_token),
+) -> dict:
+    """
+    Combined JWT + Play Integrity verification.
+
+    Use this for high-security operations that require both:
+    - User authentication (JWT from Google Sign-In)
+    - Device/app integrity (Play Integrity API)
+
+    Recommended for:
+    - First app launch / registration
+    - Before processing payments
+    - Granting premium features
+    - Periodically (once per session)
+
+    Auth: Bearer {google_id_token}
+
+    Args:
+        integrity_token: The encrypted Play Integrity token
+        nonce: The nonce used to request the token
+
+    Returns:
+        authenticated: JWT auth passed
+        integrity_verified: Play Integrity passed
+        user_id: Google user ID from JWT
+        authorized: Both checks passed
+    """
+    from structlog import get_logger
+
+    from app.config import settings
+    from app.services.play_integrity import PlayIntegrityConfig, PlayIntegrityService
+
+    logger = get_logger(__name__)
+
+    # JWT auth already verified by dependency
+    authenticated = True
+    user_id = user.external_id
+    email = user.email
+
+    # Check if Play Integrity is configured
+    if not settings.PLAY_INTEGRITY_SERVICE_ACCOUNT:
+        logger.warning("play_integrity_not_configured")
+        return {
+            "authenticated": authenticated,
+            "integrity_verified": False,
+            "user_id": user_id,
+            "email": email,
+            "authorized": False,
+            "reason": "Play Integrity API not configured",
+        }
+
+    # Verify Play Integrity
+    config = PlayIntegrityConfig(
+        package_name=settings.ANDROID_PACKAGE_NAME or "ai.ciris.agent",
+        service_account_json=settings.PLAY_INTEGRITY_SERVICE_ACCOUNT,
+    )
+    service = PlayIntegrityService(config)
+
+    result = await service.verify_token(integrity_token, nonce)
+
+    authorized = authenticated and result.verified
+
+    logger.info(
+        "integrity_auth_complete",
+        user_id=user_id,
+        authenticated=authenticated,
+        integrity_verified=result.verified,
+        authorized=authorized,
+    )
+
+    return {
+        "authenticated": authenticated,
+        "integrity_verified": result.verified,
+        "user_id": user_id,
+        "email": email,
+        "device_integrity": result.device_integrity.model_dump()
+        if result.device_integrity
+        else None,
+        "app_integrity": result.app_integrity.model_dump() if result.app_integrity else None,
+        "authorized": authorized,
+        "reason": result.error if not result.verified else None,
+    }

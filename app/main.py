@@ -6,8 +6,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -54,6 +55,25 @@ app = FastAPI(
     description=settings.api_description,
     lifespan=lifespan,
 )
+
+
+# Add validation error logging handler
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log detailed validation errors for debugging."""
+    errors = exc.errors()
+    logger.warning(
+        "validation_error",
+        path=request.url.path,
+        method=request.method,
+        errors=errors,
+        body_preview=str(exc.body)[:500] if exc.body else None,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": errors},
+    )
+
 
 # Setup tracing
 setup_tracing()

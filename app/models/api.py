@@ -57,6 +57,12 @@ class CreditCheckRequest(BaseModel):
         max_length=255,
         description="User email address for receipts and notifications",
     )
+    display_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User display name",
+    )
 
     # User metadata
     user_role: str | None = Field(
@@ -87,17 +93,17 @@ class CreditCheckResponse(BaseModel):
     """POST /v1/billing/credits/check response."""
 
     has_credit: bool
-    credits_remaining: int | None = None
+    credits_remaining: int = 0
     plan_name: str | None = None
     reason: str | None = None
-    free_uses_remaining: int | None = None
-    total_uses: int | None = None
+    free_uses_remaining: int = 0
+    total_uses: int = 0
     purchase_required: bool = False
-    purchase_price_minor: int | None = None
-    purchase_uses: int | None = None
+    purchase_price_minor: int = 0
+    purchase_uses: int = 0
     # Daily free uses (resets each day)
-    daily_free_uses_remaining: int | None = None
-    daily_free_uses_limit: int | None = None
+    daily_free_uses_remaining: int = 0
+    daily_free_uses_limit: int = 0
 
 
 # ============================================================================
@@ -133,6 +139,12 @@ class CreateChargeRequest(BaseModel):
         min_length=1,
         max_length=255,
         description="User email address for receipts and notifications",
+    )
+    display_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User display name",
     )
 
     # User metadata
@@ -225,6 +237,12 @@ class AddCreditsRequest(BaseModel):
         min_length=1,
         max_length=255,
         description="User email address for receipts and notifications",
+    )
+    display_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User display name",
     )
 
     # User metadata
@@ -400,6 +418,12 @@ class CreateAccountRequest(BaseModel):
         max_length=255,
         description="User email address for receipts and notifications",
     )
+    display_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="User display name",
+    )
 
     # User metadata
     user_role: str | None = Field(
@@ -512,6 +536,7 @@ class GooglePlayVerifyRequest(BaseModel):
 
     # User contact information
     customer_email: str | None = Field(None, min_length=1, max_length=255)
+    display_name: str | None = Field(None, min_length=1, max_length=255)
 
     # User metadata
     user_role: str | None = Field(None, max_length=50)
@@ -640,9 +665,9 @@ class LiteLLMUsageLogRequest(BaseModel):
     # Interaction reference
     interaction_id: str = Field(..., min_length=1, max_length=255)
 
-    # Usage metrics
+    # Usage metrics - made more flexible (ge=0 instead of ge=1 for calls)
     total_llm_calls: int = Field(
-        ..., ge=1, description="Number of LLM API calls in this interaction"
+        ..., ge=0, description="Number of LLM API calls in this interaction"
     )
     total_prompt_tokens: int = Field(..., ge=0, description="Total prompt tokens across all calls")
     total_completion_tokens: int = Field(..., ge=0, description="Total completion tokens")
@@ -654,12 +679,13 @@ class LiteLLMUsageLogRequest(BaseModel):
     error_count: int = Field(default=0, ge=0, description="Number of failed LLM calls")
     fallback_count: int = Field(default=0, ge=0, description="Number of fallback triggers")
 
-    @field_validator("oauth_provider")
+    @field_validator("oauth_provider", mode="before")
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if isinstance(v, str) and not v.startswith("oauth:"):
+            # Auto-fix by prepending oauth: if missing
+            return f"oauth:{v}"
         return v
 
 

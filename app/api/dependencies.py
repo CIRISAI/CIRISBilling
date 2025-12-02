@@ -28,13 +28,14 @@ class UserIdentity:
     oauth_provider: str  # e.g., "oauth:google"
     external_id: str  # Google user ID
     email: str | None = None
+    name: str | None = None
 
 
 # Bearer token scheme for JWT auth
 bearer_scheme = HTTPBearer(auto_error=False)
 
-# Cache for verified Google ID tokens: token -> (user_id, email, expiry_timestamp)
-_google_token_cache: dict[str, tuple[str, str | None, float]] = {}
+# Cache for verified Google ID tokens: token -> (user_id, email, name, expiry_timestamp)
+_google_token_cache: dict[str, tuple[str, str | None, str | None, float]] = {}
 _MAX_CACHE_SIZE = 10000
 
 
@@ -91,12 +92,13 @@ async def get_user_from_google_token(
 
     # Check cache first (avoids network call to Google)
     if token in _google_token_cache:
-        user_id, email, expiry = _google_token_cache[token]
+        user_id, email, name, expiry = _google_token_cache[token]
         if time.time() < expiry:
             return UserIdentity(
                 oauth_provider="oauth:google",
                 external_id=user_id,
                 email=email,
+                name=name,
             )
         else:
             # Token expired, remove from cache
@@ -112,62 +114,97 @@ async def get_user_from_google_token(
             detail="Server misconfiguration: google-auth not installed",
         )
 
-    try:
-        # Verify the token with Google's public keys
-        # This checks:
-        # 1. Token signature is valid (signed by Google)
-        # 2. Token is not expired
-        # 3. Token audience matches our client ID
-        # 4. Token issuer is Google
-        idinfo = id_token.verify_oauth2_token(
-            token,
-            google_requests.Request(),
-            settings.GOOGLE_CLIENT_ID,
+    # Get list of valid client IDs (supports web + Android clients)
+    valid_client_ids = settings.valid_google_client_ids
+    if not valid_client_ids:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server misconfiguration: no Google client IDs configured",
         )
 
-        # Extract user ID from the 'sub' (subject) claim
-        user_id = idinfo.get("sub")
-        email = idinfo.get("email")
+    # Import logger for debugging
+    from structlog import get_logger
 
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token: missing user ID",
-                headers={"WWW-Authenticate": "Bearer"},
+    logger = get_logger(__name__)
+    logger.info(
+        "google_token_validation_starting",
+        client_ids_count=len(valid_client_ids),
+        client_ids=valid_client_ids,
+    )
+
+    # Try each client ID until one works
+    # Android tokens have web client ID as audience but Android ID as azp
+    last_error = None
+    for client_id in valid_client_ids:
+        try:
+            # Verify the token with Google's public keys
+            # This checks:
+            # 1. Token signature is valid (signed by Google)
+            # 2. Token is not expired
+            # 3. Token audience matches our client ID
+            # 4. Token issuer is Google
+            idinfo = id_token.verify_oauth2_token(
+                token,
+                google_requests.Request(),
+                client_id,
             )
 
-        # Cache the verified token until it expires (with 60s buffer)
-        expiry = idinfo.get("exp", time.time() + 3600) - 60
-        _cleanup_google_token_cache()
-        _google_token_cache[token] = (user_id, email, expiry)
+            # Extract user ID from the 'sub' (subject) claim
+            user_id = idinfo.get("sub")
+            email = idinfo.get("email")
+            name = idinfo.get("name")
 
-        return UserIdentity(
-            oauth_provider="oauth:google",
-            external_id=user_id,
-            email=email,
+            if not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token: missing user ID",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+            # Cache the verified token until it expires (with 60s buffer)
+            expiry = idinfo.get("exp", time.time() + 3600) - 60
+            _cleanup_google_token_cache()
+            _google_token_cache[token] = (user_id, email, name, expiry)
+
+            return UserIdentity(
+                oauth_provider="oauth:google",
+                external_id=user_id,
+                email=email,
+                name=name,
+            )
+
+        except ValueError as e:
+            last_error = str(e)
+            logger.warning(
+                "google_token_validation_failed", client_id=client_id[:20] + "...", error=last_error
+            )
+            # If it's an audience mismatch, try next client ID
+            if "audience" in last_error.lower():
+                continue
+            # For other errors (expired, invalid signature), fail immediately
+            break
+
+    # All client IDs failed - report the error
+    error_msg = last_error or "Token validation failed"
+
+    if "Token has expired" in error_msg:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired. Please refresh your authentication.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-
-    except ValueError as e:
-        error_msg = str(e)
-
-        if "Token has expired" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token expired. Please refresh your authentication.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        elif "audience" in error_msg.lower():
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token audience. Please use the correct app.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid Google ID token: {error_msg}",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+    elif "audience" in error_msg.lower():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token audience. Token not issued for this application.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid Google ID token: {error_msg}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 async def get_optional_user_from_google_token(
@@ -258,3 +295,90 @@ def require_permission(required_permission: str) -> Callable[..., Awaitable[APIK
         return api_key
 
     return permission_checker
+
+
+# ============================================================================
+# Combined Auth (API Key OR JWT) for LiteLLM endpoints
+# ============================================================================
+
+
+@dataclass
+class CombinedAuth:
+    """
+    Result of combined authentication - either API key or user JWT.
+
+    When using JWT auth, the user identity is extracted from the token.
+    When using API key auth, the identity must be provided in the request body.
+    """
+
+    auth_type: str  # "api_key" or "jwt"
+    api_key: APIKeyData | None = None
+    user: UserIdentity | None = None
+
+
+async def get_api_key_or_jwt(
+    x_api_key: str | None = Header(None, description="Agent API key"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_write_db),
+) -> CombinedAuth:
+    """
+    Combined auth dependency that accepts EITHER API key OR JWT token.
+
+    Priority:
+    1. If X-API-Key header is present, use API key auth
+    2. If Authorization: Bearer token is present, use JWT auth
+    3. If neither, raise 401
+
+    This allows the LiteLLM endpoints to be called by:
+    - Service accounts using API keys (proxy-to-billing)
+    - Android apps using Google ID tokens (app-to-billing direct)
+    """
+    # Try API key first (service-to-service)
+    if x_api_key:
+        api_key_service = APIKeyService(db)
+        try:
+            api_key_data = await api_key_service.validate_api_key(x_api_key)
+            return CombinedAuth(auth_type="api_key", api_key=api_key_data)
+        except AuthenticationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid API key: {exc}",
+                headers={"WWW-Authenticate": "ApiKey"},
+            ) from exc
+
+    # Try JWT (user direct access)
+    if credentials:
+        user = await get_user_from_google_token(credentials)
+        return CombinedAuth(auth_type="jwt", user=user)
+
+    # Neither provided
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide X-API-Key header or Authorization: Bearer {google_id_token}",
+        headers={"WWW-Authenticate": "Bearer, ApiKey"},
+    )
+
+
+def require_permission_or_jwt(
+    required_permission: str,
+) -> Callable[..., Awaitable[CombinedAuth]]:
+    """
+    Combined auth with permission check for API keys.
+
+    - If API key auth: checks that the key has the required permission
+    - If JWT auth: always allowed (user is authenticated)
+    """
+
+    async def auth_checker(
+        auth: CombinedAuth = Depends(get_api_key_or_jwt),
+    ) -> CombinedAuth:
+        """Check permission for API key auth, pass through for JWT."""
+        if auth.auth_type == "api_key" and auth.api_key:
+            if required_permission not in auth.api_key.permissions:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing required permission: {required_permission}",
+                )
+        return auth
+
+    return auth_checker

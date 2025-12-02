@@ -33,6 +33,8 @@ def create_mock_account(
     daily_free_uses_remaining: int = 0,
     daily_free_uses_limit: int = 2,
     daily_free_uses_reset_at: datetime | None = None,
+    customer_email: str | None = None,
+    display_name: str | None = None,
 ) -> MagicMock:
     """Create a mock Account with given parameters."""
     account = MagicMock(spec=Account)
@@ -41,7 +43,8 @@ def create_mock_account(
     account.external_id = identity.external_id
     account.wa_id = identity.wa_id
     account.tenant_id = identity.tenant_id
-    account.customer_email = None
+    account.customer_email = customer_email
+    account.display_name = display_name
     account.balance_minor = balance_minor
     account.currency = "USD"
     account.plan_name = "free"
@@ -55,6 +58,8 @@ def create_mock_account(
     account.marketing_opt_in = False
     account.marketing_opt_in_at = None
     account.marketing_opt_in_source = None
+    account.user_role = None
+    account.agent_id = None
     account.created_at = datetime.now(UTC)
     account.updated_at = datetime.now(UTC)
     return account
@@ -499,3 +504,135 @@ class TestAccountManagement:
 
             with pytest.raises(AccountNotFoundError):
                 await service.get_account(test_account_identity)
+
+
+class TestDisplayName:
+    """Tests for display_name functionality."""
+
+    async def test_update_account_metadata_sets_display_name(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test that update_account_metadata sets display_name."""
+        mock_account = create_mock_account(test_account_identity, display_name=None)
+
+        service = BillingService(db_session)
+
+        with patch.object(
+            service, "_find_account_by_identity", new_callable=AsyncMock
+        ) as mock_find:
+            mock_find.return_value = mock_account
+
+            await service.update_account_metadata(
+                identity=test_account_identity,
+                display_name="John Doe",
+            )
+
+        assert mock_account.display_name == "John Doe"
+        db_session.commit.assert_called()
+
+    async def test_update_account_metadata_updates_display_name(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test that update_account_metadata updates existing display_name."""
+        mock_account = create_mock_account(test_account_identity, display_name="Old Name")
+
+        service = BillingService(db_session)
+
+        with patch.object(
+            service, "_find_account_by_identity", new_callable=AsyncMock
+        ) as mock_find:
+            mock_find.return_value = mock_account
+
+            await service.update_account_metadata(
+                identity=test_account_identity,
+                display_name="New Name",
+            )
+
+        assert mock_account.display_name == "New Name"
+        db_session.commit.assert_called()
+
+    async def test_update_account_metadata_no_change_when_same(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test that update_account_metadata doesn't commit when name unchanged."""
+        mock_account = create_mock_account(test_account_identity, display_name="Same Name")
+
+        service = BillingService(db_session)
+
+        with patch.object(
+            service, "_find_account_by_identity", new_callable=AsyncMock
+        ) as mock_find:
+            mock_find.return_value = mock_account
+
+            await service.update_account_metadata(
+                identity=test_account_identity,
+                display_name="Same Name",
+            )
+
+        # Should not commit when value is unchanged
+        db_session.commit.assert_not_called()
+
+    async def test_update_account_metadata_with_email_and_name(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test that update_account_metadata can update both email and name."""
+        mock_account = create_mock_account(
+            test_account_identity, customer_email=None, display_name=None
+        )
+
+        service = BillingService(db_session)
+
+        with patch.object(
+            service, "_find_account_by_identity", new_callable=AsyncMock
+        ) as mock_find:
+            mock_find.return_value = mock_account
+
+            await service.update_account_metadata(
+                identity=test_account_identity,
+                customer_email="user@example.com",
+                display_name="Jane Doe",
+            )
+
+        assert mock_account.customer_email == "user@example.com"
+        assert mock_account.display_name == "Jane Doe"
+        db_session.commit.assert_called()
+
+    async def test_get_or_create_account_with_display_name(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test account creation includes display_name."""
+        service = BillingService(db_session)
+
+        # Track the account that gets added
+        added_account = None
+
+        def capture_add(account):
+            nonlocal added_account
+            added_account = account
+
+        db_session.add = MagicMock(side_effect=capture_add)
+
+        with patch.object(
+            service, "_find_account_by_identity", new_callable=AsyncMock
+        ) as mock_find:
+            mock_find.return_value = None  # Account doesn't exist
+
+            db_session.flush = AsyncMock()
+            db_session.commit = AsyncMock()
+            # Mock session.get to return the added account after flush
+            db_session.get = AsyncMock(side_effect=lambda model, id: added_account)
+
+            await service.get_or_create_account(
+                test_account_identity,
+                initial_balance_minor=0,
+                currency="USD",
+                plan_name="free",
+                customer_email="user@example.com",
+                display_name="Test User",
+            )
+
+        # Check that add was called with an account
+        assert added_account is not None
+        # The account should have the display_name set
+        assert added_account.display_name == "Test User"
+        assert added_account.customer_email == "user@example.com"

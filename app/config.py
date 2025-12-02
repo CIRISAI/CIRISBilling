@@ -29,9 +29,25 @@ class Settings(BaseSettings):
     api_key: str | None = None  # Future: API key authentication
 
     # Admin Authentication - Google OAuth
-    GOOGLE_CLIENT_ID: str = ""  # Google OAuth client ID
+    GOOGLE_CLIENT_ID: str = ""  # Google OAuth client ID (web client)
+    GOOGLE_CLIENT_IDS: str = ""  # Comma-separated list of valid client IDs (web + Android)
     GOOGLE_CLIENT_SECRET: str = ""  # Google OAuth client secret
     ADMIN_JWT_SECRET: str = ""  # JWT secret for admin tokens (generate with: openssl rand -hex 32)
+
+    @property
+    def valid_google_client_ids(self) -> list[str]:
+        """Get list of valid Google client IDs for token validation."""
+        ids = []
+        # Add primary client ID
+        if self.GOOGLE_CLIENT_ID:
+            ids.append(self.GOOGLE_CLIENT_ID)
+        # Add additional client IDs from comma-separated list
+        if self.GOOGLE_CLIENT_IDS:
+            for cid in self.GOOGLE_CLIENT_IDS.split(","):
+                cid = cid.strip()
+                if cid and cid not in ids:
+                    ids.append(cid)
+        return ids
 
     # Logging
     log_level: str = "INFO"
@@ -54,6 +70,12 @@ class Settings(BaseSettings):
     stripe_api_key: str = ""  # Stripe secret key (sk_test_... or sk_live_...)
     stripe_webhook_secret: str = ""  # Stripe webhook signing secret (whsec_...)
     stripe_publishable_key: str = ""  # Stripe publishable key (pk_test_... or pk_live_...)
+
+    # Play Integrity API
+    # Service account JSON for calling Play Integrity API (base64 encoded or raw JSON)
+    PLAY_INTEGRITY_SERVICE_ACCOUNT: str = ""
+    # Android package name for integrity verification
+    ANDROID_PACKAGE_NAME: str = ""  # e.g., "ai.ciris.agent"
 
     # Pricing Configuration
     free_uses_per_account: int = 10  # Free interactions for new users

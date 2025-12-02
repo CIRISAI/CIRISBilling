@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
 from app.api.admin_dependencies import get_current_admin, require_admin_role
-from app.db.models import Account, AdminUser, APIKey, Charge, Credit, ProviderConfig
+from app.db.models import Account, AdminUser, APIKey, Charge, Credit, LLMUsageLog, ProviderConfig
 from app.db.session import get_read_db, get_write_db
 from app.services.api_key import APIKeyService
 
@@ -159,6 +159,124 @@ class ProviderConfigUpdateRequest(BaseModel):
 
     is_enabled: bool | None = None
     config_data: dict[str, str] | None = None
+
+
+# ============================================================================
+# Margin Analytics Models
+# ============================================================================
+
+
+class UserMarginResponse(BaseModel):
+    """Margin analytics for a single user."""
+
+    account_id: UUID
+    customer_email: str | None
+    total_interactions: int  # Number of charged interactions
+    total_revenue_cents: int  # Revenue from charges (100 cents per interaction)
+    total_llm_cost_cents: int  # Actual LLM provider cost
+    margin_cents: int  # Revenue - Cost
+    margin_percent: float  # (Revenue - Cost) / Revenue * 100
+    avg_llm_calls_per_interaction: float
+    avg_tokens_per_interaction: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    models_used: list[str]
+    first_interaction_at: datetime | None
+    last_interaction_at: datetime | None
+
+
+class UserMarginListResponse(BaseModel):
+    """Paginated list of user margins."""
+
+    users: list[UserMarginResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    # Summary totals
+    total_revenue_cents: int
+    total_llm_cost_cents: int
+    total_margin_cents: int
+    overall_margin_percent: float
+
+
+class DailyMarginResponse(BaseModel):
+    """Daily margin analytics."""
+
+    date: str  # YYYY-MM-DD
+    total_interactions: int
+    total_revenue_cents: int  # 100 cents per interaction
+    total_llm_cost_cents: int  # Actual LLM cost
+    margin_cents: int
+    margin_percent: float
+    unique_users: int
+    total_llm_calls: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    avg_cost_per_interaction_cents: float
+    error_count: int
+    fallback_count: int
+
+
+class InteractionMarginResponse(BaseModel):
+    """Margin details for a single interaction."""
+
+    usage_log_id: UUID
+    account_id: UUID
+    customer_email: str | None
+    interaction_id: str
+    created_at: datetime
+    revenue_cents: int  # 100 cents (1 credit)
+    llm_cost_cents: int  # Actual cost
+    margin_cents: int
+    margin_percent: float
+    total_llm_calls: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    models_used: list[str]
+    duration_ms: int
+    error_count: int
+    fallback_count: int
+
+
+class InteractionMarginListResponse(BaseModel):
+    """Paginated list of interaction margins."""
+
+    interactions: list[InteractionMarginResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class MarginOverviewResponse(BaseModel):
+    """High-level margin overview."""
+
+    model_config = {"protected_namespaces": ()}
+
+    # Time period
+    period_start: datetime
+    period_end: datetime
+    # Totals
+    total_interactions: int
+    total_revenue_cents: int
+    total_llm_cost_cents: int
+    total_margin_cents: int
+    overall_margin_percent: float
+    # Averages
+    avg_cost_per_interaction_cents: float
+    avg_revenue_per_user_cents: float
+    avg_llm_calls_per_interaction: float
+    avg_tokens_per_interaction: int
+    # Counts
+    unique_users: int
+    total_llm_calls: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    total_errors: int
+    total_fallbacks: int
+    # Model breakdown
+    model_usage: dict[str, int]  # model_name -> count
 
 
 # ============================================================================
@@ -781,4 +899,532 @@ async def update_provider_config(
         is_enabled=config.is_active,
         config_data=config.config_data,
         updated_at=config.updated_at,
+    )
+
+
+# ============================================================================
+# Margin Analytics
+# ============================================================================
+
+# Revenue per interaction in cents (users pay 1 credit = $1.00 = 100 cents)
+REVENUE_PER_INTERACTION_CENTS = 100
+
+
+@router.get("/analytics/margin/overview", response_model=MarginOverviewResponse)
+async def get_margin_overview(
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    db: AsyncSession = Depends(get_read_db),
+    admin: AdminUser = Depends(get_current_admin),
+) -> MarginOverviewResponse:
+    """
+    Get high-level margin overview for the specified period.
+
+    Shows total revenue, costs, and margin across all users.
+
+    Accessible by: admin, viewer
+    """
+    now = datetime.now(UTC)
+    period_start = now - timedelta(days=days)
+
+    # Get aggregated usage stats
+    usage_stmt = select(
+        func.count(LLMUsageLog.id).label("total_interactions"),
+        func.coalesce(func.sum(LLMUsageLog.actual_cost_cents), 0).label("total_cost"),
+        func.coalesce(func.sum(LLMUsageLog.total_llm_calls), 0).label("total_llm_calls"),
+        func.coalesce(func.sum(LLMUsageLog.total_prompt_tokens), 0).label("total_prompt_tokens"),
+        func.coalesce(func.sum(LLMUsageLog.total_completion_tokens), 0).label(
+            "total_completion_tokens"
+        ),
+        func.coalesce(func.sum(LLMUsageLog.error_count), 0).label("total_errors"),
+        func.coalesce(func.sum(LLMUsageLog.fallback_count), 0).label("total_fallbacks"),
+        func.count(func.distinct(LLMUsageLog.account_id)).label("unique_users"),
+    ).where(LLMUsageLog.created_at >= period_start)
+
+    usage_result = await db.execute(usage_stmt)
+    usage_row = usage_result.one()
+
+    total_interactions = usage_row.total_interactions
+    total_llm_cost_cents = usage_row.total_cost
+    total_revenue_cents = total_interactions * REVENUE_PER_INTERACTION_CENTS
+    total_margin_cents = total_revenue_cents - total_llm_cost_cents
+
+    # Calculate percentages and averages
+    overall_margin_percent = (
+        (total_margin_cents / total_revenue_cents * 100) if total_revenue_cents > 0 else 0.0
+    )
+    avg_cost_per_interaction = (
+        total_llm_cost_cents / total_interactions if total_interactions > 0 else 0.0
+    )
+    avg_revenue_per_user = (
+        total_revenue_cents / usage_row.unique_users if usage_row.unique_users > 0 else 0.0
+    )
+    avg_llm_calls = (
+        usage_row.total_llm_calls / total_interactions if total_interactions > 0 else 0.0
+    )
+    total_tokens = usage_row.total_prompt_tokens + usage_row.total_completion_tokens
+    avg_tokens = int(total_tokens / total_interactions) if total_interactions > 0 else 0
+
+    # Get model usage breakdown
+    model_stmt = (
+        select(
+            func.unnest(LLMUsageLog.models_used).label("model"),
+            func.count().label("count"),
+        )
+        .where(LLMUsageLog.created_at >= period_start)
+        .group_by(func.unnest(LLMUsageLog.models_used))
+    )
+
+    model_result = await db.execute(model_stmt)
+    model_usage = {row.model: row.count for row in model_result.all()}
+
+    logger.info(
+        "admin_margin_overview",
+        admin_email=admin.email,
+        days=days,
+        total_interactions=total_interactions,
+        margin_percent=round(overall_margin_percent, 2),
+    )
+
+    return MarginOverviewResponse(
+        period_start=period_start,
+        period_end=now,
+        total_interactions=total_interactions,
+        total_revenue_cents=total_revenue_cents,
+        total_llm_cost_cents=total_llm_cost_cents,
+        total_margin_cents=total_margin_cents,
+        overall_margin_percent=round(overall_margin_percent, 2),
+        avg_cost_per_interaction_cents=round(avg_cost_per_interaction, 2),
+        avg_revenue_per_user_cents=round(avg_revenue_per_user, 2),
+        avg_llm_calls_per_interaction=round(avg_llm_calls, 2),
+        avg_tokens_per_interaction=avg_tokens,
+        unique_users=usage_row.unique_users,
+        total_llm_calls=usage_row.total_llm_calls,
+        total_prompt_tokens=usage_row.total_prompt_tokens,
+        total_completion_tokens=usage_row.total_completion_tokens,
+        total_errors=usage_row.total_errors,
+        total_fallbacks=usage_row.total_fallbacks,
+        model_usage=model_usage,
+    )
+
+
+@router.get("/analytics/margin/daily", response_model=list[DailyMarginResponse])
+async def get_daily_margin(
+    days: int = Query(30, ge=1, le=365, description="Number of days to retrieve"),
+    db: AsyncSession = Depends(get_read_db),
+    admin: AdminUser = Depends(get_current_admin),
+) -> list[DailyMarginResponse]:
+    """
+    Get daily margin analytics for the specified period.
+
+    Shows revenue, cost, and margin broken down by day.
+
+    Accessible by: admin, viewer
+    """
+    now = datetime.now(UTC)
+    start_date = now - timedelta(days=days)
+
+    # Get daily usage aggregates
+    daily_stmt = (
+        select(
+            func.date_trunc("day", LLMUsageLog.created_at).label("date"),
+            func.count(LLMUsageLog.id).label("total_interactions"),
+            func.coalesce(func.sum(LLMUsageLog.actual_cost_cents), 0).label("total_cost"),
+            func.count(func.distinct(LLMUsageLog.account_id)).label("unique_users"),
+            func.coalesce(func.sum(LLMUsageLog.total_llm_calls), 0).label("total_llm_calls"),
+            func.coalesce(func.sum(LLMUsageLog.total_prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(LLMUsageLog.total_completion_tokens), 0).label(
+                "completion_tokens"
+            ),
+            func.coalesce(func.sum(LLMUsageLog.error_count), 0).label("error_count"),
+            func.coalesce(func.sum(LLMUsageLog.fallback_count), 0).label("fallback_count"),
+        )
+        .where(LLMUsageLog.created_at >= start_date)
+        .group_by(func.date_trunc("day", LLMUsageLog.created_at))
+        .order_by(func.date_trunc("day", LLMUsageLog.created_at))
+    )
+
+    result = await db.execute(daily_stmt)
+    rows = result.all()
+
+    # Build daily data with margin calculations
+    daily_data = []
+    for row in rows:
+        revenue = row.total_interactions * REVENUE_PER_INTERACTION_CENTS
+        cost = row.total_cost
+        margin = revenue - cost
+        margin_percent = (margin / revenue * 100) if revenue > 0 else 0.0
+        avg_cost = cost / row.total_interactions if row.total_interactions > 0 else 0.0
+
+        daily_data.append(
+            DailyMarginResponse(
+                date=row.date.strftime("%Y-%m-%d"),
+                total_interactions=row.total_interactions,
+                total_revenue_cents=revenue,
+                total_llm_cost_cents=cost,
+                margin_cents=margin,
+                margin_percent=round(margin_percent, 2),
+                unique_users=row.unique_users,
+                total_llm_calls=row.total_llm_calls,
+                total_prompt_tokens=row.prompt_tokens,
+                total_completion_tokens=row.completion_tokens,
+                avg_cost_per_interaction_cents=round(avg_cost, 2),
+                error_count=row.error_count,
+                fallback_count=row.fallback_count,
+            )
+        )
+
+    logger.info("admin_margin_daily", admin_email=admin.email, days=days, rows=len(daily_data))
+
+    return daily_data
+
+
+@router.get("/analytics/margin/users", response_model=UserMarginListResponse)
+async def get_user_margins(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    sort_by: str = Query(
+        "margin_cents",
+        pattern="^(margin_cents|total_revenue_cents|total_llm_cost_cents|total_interactions)$",
+        description="Sort field",
+    ),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
+    db: AsyncSession = Depends(get_read_db),
+    admin: AdminUser = Depends(get_current_admin),
+) -> UserMarginListResponse:
+    """
+    Get margin analytics per user.
+
+    Shows each user's revenue, cost, and margin for the period.
+
+    Accessible by: admin, viewer
+    """
+    now = datetime.now(UTC)
+    start_date = now - timedelta(days=days)
+    offset = (page - 1) * page_size
+
+    # Get per-user usage aggregates with account join
+    user_stmt = (
+        select(
+            LLMUsageLog.account_id,
+            Account.customer_email,
+            func.count(LLMUsageLog.id).label("total_interactions"),
+            func.coalesce(func.sum(LLMUsageLog.actual_cost_cents), 0).label("total_cost"),
+            func.coalesce(func.sum(LLMUsageLog.total_llm_calls), 0).label("total_llm_calls"),
+            func.coalesce(func.sum(LLMUsageLog.total_prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(LLMUsageLog.total_completion_tokens), 0).label(
+                "completion_tokens"
+            ),
+            func.min(LLMUsageLog.created_at).label("first_interaction"),
+            func.max(LLMUsageLog.created_at).label("last_interaction"),
+        )
+        .join(Account, LLMUsageLog.account_id == Account.id)
+        .where(LLMUsageLog.created_at >= start_date)
+        .group_by(LLMUsageLog.account_id, Account.customer_email)
+    )
+
+    # Get total count
+    count_subq = user_stmt.subquery()
+    count_stmt = select(func.count()).select_from(count_subq)
+    count_result = await db.execute(count_stmt)
+    total = count_result.scalar_one()
+
+    # Apply sorting and pagination
+    # We need to compute margin for sorting
+    subq = user_stmt.subquery()
+    sorted_stmt = select(subq).add_columns(
+        (subq.c.total_interactions * REVENUE_PER_INTERACTION_CENTS).label("revenue"),
+        (subq.c.total_interactions * REVENUE_PER_INTERACTION_CENTS - subq.c.total_cost).label(
+            "margin"
+        ),
+    )
+
+    # Apply sort
+    if sort_by == "margin_cents":
+        sort_col = subq.c.total_interactions * REVENUE_PER_INTERACTION_CENTS - subq.c.total_cost
+    elif sort_by == "total_revenue_cents":
+        sort_col = subq.c.total_interactions * REVENUE_PER_INTERACTION_CENTS
+    elif sort_by == "total_llm_cost_cents":
+        sort_col = subq.c.total_cost
+    else:
+        sort_col = subq.c.total_interactions
+
+    if sort_order == "desc":
+        sorted_stmt = sorted_stmt.order_by(sort_col.desc())
+    else:
+        sorted_stmt = sorted_stmt.order_by(sort_col.asc())
+
+    sorted_stmt = sorted_stmt.offset(offset).limit(page_size)
+
+    result = await db.execute(sorted_stmt)
+    rows = result.all()
+
+    # Build user margin list
+    users = []
+    total_revenue_all = 0
+    total_cost_all = 0
+
+    for row in rows:
+        revenue = row.total_interactions * REVENUE_PER_INTERACTION_CENTS
+        cost = row.total_cost
+        margin = revenue - cost
+        margin_percent = (margin / revenue * 100) if revenue > 0 else 0.0
+        avg_llm_calls = (
+            row.total_llm_calls / row.total_interactions if row.total_interactions > 0 else 0.0
+        )
+        total_tokens = row.prompt_tokens + row.completion_tokens
+        avg_tokens = int(total_tokens / row.total_interactions) if row.total_interactions > 0 else 0
+
+        total_revenue_all += revenue
+        total_cost_all += cost
+
+        # Get models used for this user (separate query for array aggregation)
+        models_stmt = (
+            select(func.array_agg(func.distinct(func.unnest(LLMUsageLog.models_used))))
+            .where(LLMUsageLog.account_id == row.account_id)
+            .where(LLMUsageLog.created_at >= start_date)
+        )
+        models_result = await db.execute(models_stmt)
+        models_used = models_result.scalar_one() or []
+
+        users.append(
+            UserMarginResponse(
+                account_id=row.account_id,
+                customer_email=row.customer_email,
+                total_interactions=row.total_interactions,
+                total_revenue_cents=revenue,
+                total_llm_cost_cents=cost,
+                margin_cents=margin,
+                margin_percent=round(margin_percent, 2),
+                avg_llm_calls_per_interaction=round(avg_llm_calls, 2),
+                avg_tokens_per_interaction=avg_tokens,
+                total_prompt_tokens=row.prompt_tokens,
+                total_completion_tokens=row.completion_tokens,
+                models_used=models_used,
+                first_interaction_at=row.first_interaction,
+                last_interaction_at=row.last_interaction,
+            )
+        )
+
+    # Calculate overall summary
+    total_margin_all = total_revenue_all - total_cost_all
+    overall_margin_percent = (
+        (total_margin_all / total_revenue_all * 100) if total_revenue_all > 0 else 0.0
+    )
+    total_pages = (total + page_size - 1) // page_size
+
+    logger.info(
+        "admin_margin_users",
+        admin_email=admin.email,
+        days=days,
+        page=page,
+        total=total,
+    )
+
+    return UserMarginListResponse(
+        users=users,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        total_revenue_cents=total_revenue_all,
+        total_llm_cost_cents=total_cost_all,
+        total_margin_cents=total_margin_all,
+        overall_margin_percent=round(overall_margin_percent, 2),
+    )
+
+
+@router.get("/analytics/margin/interactions", response_model=InteractionMarginListResponse)
+async def get_interaction_margins(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
+    account_id: UUID | None = Query(None, description="Filter by account ID"),
+    days: int = Query(7, ge=1, le=90, description="Number of days to retrieve"),
+    db: AsyncSession = Depends(get_read_db),
+    admin: AdminUser = Depends(get_current_admin),
+) -> InteractionMarginListResponse:
+    """
+    Get detailed margin for each interaction.
+
+    Shows revenue, cost, and margin per interaction with LLM details.
+
+    Accessible by: admin, viewer
+    """
+    now = datetime.now(UTC)
+    start_date = now - timedelta(days=days)
+    offset = (page - 1) * page_size
+
+    # Build query
+    stmt = (
+        select(
+            LLMUsageLog.id,
+            LLMUsageLog.account_id,
+            Account.customer_email,
+            LLMUsageLog.interaction_id,
+            LLMUsageLog.created_at,
+            LLMUsageLog.actual_cost_cents,
+            LLMUsageLog.total_llm_calls,
+            LLMUsageLog.total_prompt_tokens,
+            LLMUsageLog.total_completion_tokens,
+            LLMUsageLog.models_used,
+            LLMUsageLog.duration_ms,
+            LLMUsageLog.error_count,
+            LLMUsageLog.fallback_count,
+        )
+        .join(Account, LLMUsageLog.account_id == Account.id)
+        .where(LLMUsageLog.created_at >= start_date)
+    )
+
+    if account_id:
+        stmt = stmt.where(LLMUsageLog.account_id == account_id)
+
+    # Get total count
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    count_result = await db.execute(count_stmt)
+    total = count_result.scalar_one()
+
+    # Apply pagination and ordering (most recent first)
+    stmt = stmt.order_by(LLMUsageLog.created_at.desc()).offset(offset).limit(page_size)
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    # Build interaction list
+    interactions = []
+    for row in rows:
+        revenue = REVENUE_PER_INTERACTION_CENTS
+        cost = row.actual_cost_cents
+        margin = revenue - cost
+        margin_percent = (margin / revenue * 100) if revenue > 0 else 0.0
+
+        interactions.append(
+            InteractionMarginResponse(
+                usage_log_id=row.id,
+                account_id=row.account_id,
+                customer_email=row.customer_email,
+                interaction_id=row.interaction_id,
+                created_at=row.created_at,
+                revenue_cents=revenue,
+                llm_cost_cents=cost,
+                margin_cents=margin,
+                margin_percent=round(margin_percent, 2),
+                total_llm_calls=row.total_llm_calls,
+                total_prompt_tokens=row.total_prompt_tokens,
+                total_completion_tokens=row.total_completion_tokens,
+                models_used=row.models_used or [],
+                duration_ms=row.duration_ms,
+                error_count=row.error_count,
+                fallback_count=row.fallback_count,
+            )
+        )
+
+    total_pages = (total + page_size - 1) // page_size
+
+    logger.info(
+        "admin_margin_interactions",
+        admin_email=admin.email,
+        days=days,
+        page=page,
+        total=total,
+        account_id=str(account_id) if account_id else None,
+    )
+
+    return InteractionMarginListResponse(
+        interactions=interactions,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/analytics/margin/users/{account_id}", response_model=UserMarginResponse)
+async def get_user_margin_detail(
+    account_id: UUID,
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    db: AsyncSession = Depends(get_read_db),
+    admin: AdminUser = Depends(get_current_admin),
+) -> UserMarginResponse:
+    """
+    Get detailed margin analytics for a specific user.
+
+    Accessible by: admin, viewer
+    """
+    now = datetime.now(UTC)
+    start_date = now - timedelta(days=days)
+
+    # Get user's account
+    account_stmt = select(Account).where(Account.id == account_id)
+    account_result = await db.execute(account_stmt)
+    account = account_result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account {account_id} not found",
+        )
+
+    # Get usage stats for this user
+    usage_stmt = select(
+        func.count(LLMUsageLog.id).label("total_interactions"),
+        func.coalesce(func.sum(LLMUsageLog.actual_cost_cents), 0).label("total_cost"),
+        func.coalesce(func.sum(LLMUsageLog.total_llm_calls), 0).label("total_llm_calls"),
+        func.coalesce(func.sum(LLMUsageLog.total_prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(LLMUsageLog.total_completion_tokens), 0).label("completion_tokens"),
+        func.min(LLMUsageLog.created_at).label("first_interaction"),
+        func.max(LLMUsageLog.created_at).label("last_interaction"),
+    ).where(
+        LLMUsageLog.account_id == account_id,
+        LLMUsageLog.created_at >= start_date,
+    )
+
+    usage_result = await db.execute(usage_stmt)
+    usage_row = usage_result.one()
+
+    # Get models used
+    models_stmt = (
+        select(func.array_agg(func.distinct(func.unnest(LLMUsageLog.models_used))))
+        .where(LLMUsageLog.account_id == account_id)
+        .where(LLMUsageLog.created_at >= start_date)
+    )
+    models_result = await db.execute(models_stmt)
+    models_used = models_result.scalar_one() or []
+
+    # Calculate metrics
+    revenue = usage_row.total_interactions * REVENUE_PER_INTERACTION_CENTS
+    cost = usage_row.total_cost
+    margin = revenue - cost
+    margin_percent = (margin / revenue * 100) if revenue > 0 else 0.0
+    avg_llm_calls = (
+        usage_row.total_llm_calls / usage_row.total_interactions
+        if usage_row.total_interactions > 0
+        else 0.0
+    )
+    total_tokens = usage_row.prompt_tokens + usage_row.completion_tokens
+    avg_tokens = (
+        int(total_tokens / usage_row.total_interactions) if usage_row.total_interactions > 0 else 0
+    )
+
+    logger.info(
+        "admin_margin_user_detail",
+        admin_email=admin.email,
+        account_id=str(account_id),
+        days=days,
+    )
+
+    return UserMarginResponse(
+        account_id=account_id,
+        customer_email=account.customer_email,
+        total_interactions=usage_row.total_interactions,
+        total_revenue_cents=revenue,
+        total_llm_cost_cents=cost,
+        margin_cents=margin,
+        margin_percent=round(margin_percent, 2),
+        avg_llm_calls_per_interaction=round(avg_llm_calls, 2),
+        avg_tokens_per_interaction=avg_tokens,
+        total_prompt_tokens=usage_row.prompt_tokens,
+        total_completion_tokens=usage_row.completion_tokens,
+        models_used=models_used,
+        first_interaction_at=usage_row.first_interaction,
+        last_interaction_at=usage_row.last_interaction,
     )

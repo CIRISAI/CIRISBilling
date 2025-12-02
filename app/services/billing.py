@@ -192,8 +192,8 @@ class BillingService:
             free_uses_remaining=account.free_uses_remaining,
             total_uses=account.total_uses,
             purchase_required=purchase_required,
-            purchase_price_minor=settings.price_per_purchase_minor if purchase_required else None,
-            purchase_uses=settings.paid_uses_per_purchase if purchase_required else None,
+            purchase_price_minor=settings.price_per_purchase_minor if purchase_required else 0,
+            purchase_uses=settings.paid_uses_per_purchase if purchase_required else 0,
             daily_free_uses_remaining=daily_free_uses,
             daily_free_uses_limit=account.daily_free_uses_limit,
         )
@@ -432,6 +432,7 @@ class BillingService:
         currency: str = "USD",
         plan_name: str = "free",
         customer_email: str | None = None,
+        display_name: str | None = None,
         marketing_opt_in: bool = False,
         marketing_opt_in_source: str | None = None,
         user_role: str | None = None,
@@ -456,6 +457,7 @@ class BillingService:
             wa_id=identity.wa_id,
             tenant_id=identity.tenant_id,
             customer_email=customer_email,
+            display_name=display_name,
             balance_minor=initial_balance_minor,
             currency=currency,
             plan_name=plan_name,
@@ -504,6 +506,7 @@ class BillingService:
         self,
         identity: AccountIdentity,
         customer_email: str | None = None,
+        display_name: str | None = None,
         marketing_opt_in: bool | None = None,
         marketing_opt_in_source: str | None = None,
         user_role: str | None = None,
@@ -522,6 +525,7 @@ class BillingService:
             oauth_provider=identity.oauth_provider,
             external_id=identity.external_id,
             customer_email=customer_email,
+            display_name=display_name,
             marketing_opt_in=marketing_opt_in,
             user_role=user_role,
             agent_id=agent_id,
@@ -547,6 +551,15 @@ class BillingService:
                 "update_account_metadata_email_unchanged",
                 email=customer_email,
             )
+
+        if display_name is not None and account.display_name != display_name:
+            logger.info(
+                "update_account_metadata_name_update",
+                old_name=account.display_name,
+                new_name=display_name,
+            )
+            account.display_name = display_name
+            updated = True
 
         if marketing_opt_in is not None and account.marketing_opt_in != marketing_opt_in:
             account.marketing_opt_in = marketing_opt_in
