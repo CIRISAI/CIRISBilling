@@ -92,7 +92,7 @@ class IntegrityVerifyResponse(BaseModel):
     """Response from Play Integrity verification."""
 
     verified: bool = Field(..., description="Whether the integrity check passed")
-    request_details: dict | None = Field(None, description="Request metadata from token")
+    request_details: dict[str, str] | None = Field(None, description="Request metadata from token")
     device_integrity: DeviceIntegrityResult | None = None
     app_integrity: AppIntegrityResult | None = None
     account_details: AccountIntegrityResult | None = None

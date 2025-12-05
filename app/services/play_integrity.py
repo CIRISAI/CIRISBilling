@@ -20,6 +20,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from structlog import get_logger
 
@@ -178,7 +179,7 @@ class PlayIntegrityService:
         # Step 4: Validate the decoded token
         return self._process_decoded_token(decoded, nonce)
 
-    async def _decode_integrity_token(self, integrity_token: str) -> dict:
+    async def _decode_integrity_token(self, integrity_token: str) -> dict[str, Any]:
         """
         Decode integrity token using Google Play Integrity API.
 
@@ -193,7 +194,7 @@ class PlayIntegrityService:
                 import json
 
                 service_account_info = json.loads(self.config.service_account_json)
-                self._credentials = service_account.Credentials.from_service_account_info(
+                self._credentials = service_account.Credentials.from_service_account_info(  # type: ignore[no-untyped-call]
                     service_account_info,
                     scopes=["https://www.googleapis.com/auth/playintegrity"],
                 )
@@ -201,7 +202,7 @@ class PlayIntegrityService:
                 # Use default credentials (GOOGLE_APPLICATION_CREDENTIALS env var)
                 from google.auth import default
 
-                self._credentials, _ = default(
+                self._credentials, _ = default(  # type: ignore[no-untyped-call]
                     scopes=["https://www.googleapis.com/auth/playintegrity"]
                 )
 
@@ -221,9 +222,11 @@ class PlayIntegrityService:
             package_name=self.config.package_name,
         )
 
-        return response
+        return response  # type: ignore[no-any-return]
 
-    def _process_decoded_token(self, decoded: dict, expected_nonce: str) -> IntegrityVerifyResponse:
+    def _process_decoded_token(
+        self, decoded: dict[str, Any], expected_nonce: str
+    ) -> IntegrityVerifyResponse:
         """Process the decoded token and extract verdicts."""
         token_payload = decoded.get("tokenPayloadExternal", {})
 

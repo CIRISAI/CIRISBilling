@@ -176,13 +176,28 @@ class TestLiteLLMUsageLogRequest:
         assert request.fallback_count == 2
 
     def test_min_llm_calls(self):
-        """Test that total_llm_calls must be at least 1."""
+        """Test that total_llm_calls can be 0 (e.g., for cached responses)."""
+        # Model now allows 0 for flexibility (cached responses, fallbacks, etc.)
+        request = LiteLLMUsageLogRequest(
+            oauth_provider="oauth:google",
+            external_id="user-123",
+            interaction_id="int-456",
+            total_llm_calls=0,  # Now allowed (ge=0)
+            total_prompt_tokens=1000,
+            total_completion_tokens=100,
+            models_used=[],
+            actual_cost_cents=1,
+            duration_ms=100,
+        )
+        assert request.total_llm_calls == 0
+
+        # Negative values should still fail
         with pytest.raises(ValidationError):
             LiteLLMUsageLogRequest(
                 oauth_provider="oauth:google",
                 external_id="user-123",
                 interaction_id="int-456",
-                total_llm_calls=0,  # Must be >= 1
+                total_llm_calls=-1,  # Must be >= 0
                 total_prompt_tokens=1000,
                 total_completion_tokens=100,
                 models_used=[],

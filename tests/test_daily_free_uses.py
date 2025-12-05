@@ -7,7 +7,7 @@ and edge cases like timezone handling.
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -23,7 +23,7 @@ from app.services.billing import (
 )
 
 
-def create_mock_charge(account_id: uuid4) -> MagicMock:
+def create_mock_charge(account_id: UUID) -> MagicMock:
     """Create a mock Charge for verification."""
     charge = MagicMock(spec=Charge)
     charge.id = uuid4()

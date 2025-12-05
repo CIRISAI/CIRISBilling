@@ -157,9 +157,9 @@ async def get_user_from_google_token(
             # 2. Token is not expired
             # 3. Token audience matches our client ID
             # 4. Token issuer is Google
-            idinfo = id_token.verify_oauth2_token(
+            idinfo = id_token.verify_oauth2_token(  # type: ignore[no-untyped-call]
                 token,
-                google_requests.Request(),
+                google_requests.Request(),  # type: ignore[no-untyped-call]
                 client_id,
             )
 

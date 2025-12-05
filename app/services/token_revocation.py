@@ -243,12 +243,13 @@ class TokenRevocationService:
         stmt = delete(RevokedToken).where(RevokedToken.token_expires_at < now_dt)
         result = await db.execute(stmt)
         await db.commit()
+        rows_deleted = result.rowcount if result.rowcount else 0  # type: ignore[attr-defined]
 
-        if expired_hashes or result.rowcount > 0:
+        if expired_hashes or rows_deleted > 0:
             logger.info(
                 "revoked_tokens_cleanup",
                 cache_removed=len(expired_hashes),
-                db_removed=result.rowcount,
+                db_removed=rows_deleted,
             )
 
     async def get_revocation_stats(self, db: AsyncSession) -> dict[str, int | bool]:

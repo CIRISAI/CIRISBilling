@@ -59,7 +59,9 @@ app = FastAPI(
 
 # Add validation error logging handler
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """Log detailed validation errors for debugging."""
     errors = exc.errors()
 

@@ -5,6 +5,7 @@ NO DICTIONARIES - All requests/responses use Pydantic models.
 """
 
 from datetime import UTC
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import text
@@ -1198,7 +1199,7 @@ async def list_transactions(
 async def litellm_log_usage_debug(
     request: Request,
     api_key: APIKeyData = Depends(require_permission("billing:write")),
-) -> dict:
+) -> dict[str, Any]:
     """Debug endpoint to capture raw request body."""
     from structlog import get_logger
 
@@ -1567,7 +1568,7 @@ async def user_verify_google_play_purchase(
 )
 async def get_integrity_nonce(
     context: str | None = None,
-) -> dict:
+) -> dict[str, str]:
     """
     Get a nonce for Play Integrity verification.
 
@@ -1607,7 +1608,7 @@ async def get_integrity_nonce(
 async def verify_integrity(
     integrity_token: str,
     nonce: str,
-) -> dict:
+) -> dict[str, Any]:
     """
     Verify a Play Integrity token.
 
@@ -1652,7 +1653,7 @@ async def verify_integrity_with_auth(
     integrity_token: str,
     nonce: str,
     user: UserIdentity = Depends(get_user_from_google_token),
-) -> dict:
+) -> dict[str, Any]:
     """
     Combined JWT + Play Integrity verification.
 

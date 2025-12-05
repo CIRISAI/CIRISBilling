@@ -306,6 +306,7 @@ class PurchaseRequest(BaseModel):
     return_url: str | None = Field(None, min_length=1)
 
     # User metadata
+    display_name: str | None = Field(None, max_length=255, description="User display name")
     user_role: str | None = Field(
         None, max_length=50, description="User role (admin, authority, observer)"
     )

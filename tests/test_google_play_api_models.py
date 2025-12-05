@@ -126,16 +126,16 @@ class TestGooglePlayVerifyResponse:
     def test_valid_response(self):
         """Test creating valid verify response."""
         response = GooglePlayVerifyResponse(
-            verified=True,
+            success=True,
             credits_added=100,
-            balance_after=100,
+            new_balance=100,
             order_id="GPA.1234-5678-9012",
             purchase_time_millis=1700000000000,
         )
 
-        assert response.verified is True
+        assert response.success is True
         assert response.credits_added == 100
-        assert response.balance_after == 100
+        assert response.new_balance == 100
         assert response.order_id == "GPA.1234-5678-9012"
         assert response.purchase_time_millis == 1700000000000
         assert response.already_processed is False
@@ -143,28 +143,28 @@ class TestGooglePlayVerifyResponse:
     def test_already_processed_response(self):
         """Test response for already processed purchase."""
         response = GooglePlayVerifyResponse(
-            verified=True,
+            success=True,
             credits_added=100,
-            balance_after=200,
+            new_balance=200,
             order_id="GPA.1234-5678-9012",
             purchase_time_millis=1700000000000,
             already_processed=True,
         )
 
-        assert response.verified is True
+        assert response.success is True
         assert response.already_processed is True
 
     def test_minimal_response(self):
         """Test response with only required fields."""
         response = GooglePlayVerifyResponse(
-            verified=True,
+            success=True,
             credits_added=100,
-            balance_after=100,
+            new_balance=100,
         )
 
-        assert response.verified is True
+        assert response.success is True
         assert response.credits_added == 100
-        assert response.balance_after == 100
+        assert response.new_balance == 100
         assert response.order_id is None
         assert response.purchase_time_millis is None
         assert response.already_processed is False

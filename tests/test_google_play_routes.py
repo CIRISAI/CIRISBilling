@@ -53,26 +53,26 @@ class TestGooglePlayVerifyEndpoint:
     def test_verify_response_model(self):
         """Test response model creation."""
         response = GooglePlayVerifyResponse(
-            verified=True,
+            success=True,
             credits_added=100,
-            balance_after=100,
+            new_balance=100,
             order_id="GPA.1234-5678-9012",
             purchase_time_millis=1700000000000,
             already_processed=False,
         )
 
-        assert response.verified is True
+        assert response.success is True
         assert response.credits_added == 100
-        assert response.balance_after == 100
+        assert response.new_balance == 100
         assert response.order_id == "GPA.1234-5678-9012"
         assert response.already_processed is False
 
     def test_verify_response_already_processed(self):
         """Test response for already processed purchase."""
         response = GooglePlayVerifyResponse(
-            verified=True,
+            success=True,
             credits_added=100,
-            balance_after=200,
+            new_balance=200,
             order_id="GPA.1234-5678-9012",
             purchase_time_millis=1700000000000,
             already_processed=True,
