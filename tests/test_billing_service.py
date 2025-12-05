@@ -422,6 +422,175 @@ class TestCreditAddition:
                 with pytest.raises(AccountNotFoundError):
                     await service.add_credits(intent)
 
+    async def test_add_credits_with_is_test_true(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test credit addition with is_test=True for test purchases."""
+        account_id = uuid4()
+        mock_account = create_mock_account(test_account_identity, paid_credits=0)
+        mock_account.id = account_id
+
+        service = BillingService(db_session)
+
+        # Track the Credit object that gets added
+        added_credit = None
+
+        def capture_add(obj):
+            nonlocal added_credit
+            from app.db.models import Credit
+
+            if isinstance(obj, Credit):
+                obj.id = uuid4()  # Simulate ID generation
+                added_credit = obj
+
+        db_session.add = MagicMock(side_effect=capture_add)
+        db_session.get = AsyncMock(
+            side_effect=lambda model, id: added_credit
+            if added_credit and added_credit.id == id
+            else mock_account
+        )
+
+        with patch.object(
+            service, "_find_credit_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
+            mock_idemp.return_value = None
+
+            with patch.object(
+                service, "_lock_account_for_update", new_callable=AsyncMock
+            ) as mock_get:
+                mock_get.return_value = mock_account
+
+                intent = CreditIntent(
+                    account_identity=test_account_identity,
+                    amount_minor=500,
+                    currency="USD",
+                    description="Test credit (test purchase)",
+                    transaction_type=TransactionType.PURCHASE,
+                    external_transaction_id="GPA.test-123",
+                    idempotency_key=None,
+                    is_test=True,
+                )
+
+                await service.add_credits(intent)
+
+        # Credits should be added
+        assert mock_account.paid_credits == 500
+        # Verify Credit was created with is_test=True
+        assert added_credit is not None
+        assert added_credit.is_test is True
+
+    async def test_add_credits_with_is_test_false(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test credit addition with is_test=False for real purchases."""
+        account_id = uuid4()
+        mock_account = create_mock_account(test_account_identity, paid_credits=0)
+        mock_account.id = account_id
+
+        service = BillingService(db_session)
+
+        # Track the Credit object that gets added
+        added_credit = None
+
+        def capture_add(obj):
+            nonlocal added_credit
+            from app.db.models import Credit
+
+            if isinstance(obj, Credit):
+                obj.id = uuid4()  # Simulate ID generation
+                added_credit = obj
+
+        db_session.add = MagicMock(side_effect=capture_add)
+        db_session.get = AsyncMock(
+            side_effect=lambda model, id: added_credit
+            if added_credit and added_credit.id == id
+            else mock_account
+        )
+
+        with patch.object(
+            service, "_find_credit_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
+            mock_idemp.return_value = None
+
+            with patch.object(
+                service, "_lock_account_for_update", new_callable=AsyncMock
+            ) as mock_get:
+                mock_get.return_value = mock_account
+
+                intent = CreditIntent(
+                    account_identity=test_account_identity,
+                    amount_minor=500,
+                    currency="USD",
+                    description="Real credit purchase",
+                    transaction_type=TransactionType.PURCHASE,
+                    external_transaction_id="GPA.real-123",
+                    idempotency_key=None,
+                    is_test=False,
+                )
+
+                await service.add_credits(intent)
+
+        # Credits should be added
+        assert mock_account.paid_credits == 500
+        # Verify Credit was created with is_test=False
+        assert added_credit is not None
+        assert added_credit.is_test is False
+
+    async def test_add_credits_default_is_test_false(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test credit addition defaults is_test to False."""
+        account_id = uuid4()
+        mock_account = create_mock_account(test_account_identity, paid_credits=0)
+        mock_account.id = account_id
+
+        service = BillingService(db_session)
+
+        # Track the Credit object that gets added
+        added_credit = None
+
+        def capture_add(obj):
+            nonlocal added_credit
+            from app.db.models import Credit
+
+            if isinstance(obj, Credit):
+                obj.id = uuid4()  # Simulate ID generation
+                added_credit = obj
+
+        db_session.add = MagicMock(side_effect=capture_add)
+        db_session.get = AsyncMock(
+            side_effect=lambda model, id: added_credit
+            if added_credit and added_credit.id == id
+            else mock_account
+        )
+
+        with patch.object(
+            service, "_find_credit_by_idempotency", new_callable=AsyncMock
+        ) as mock_idemp:
+            mock_idemp.return_value = None
+
+            with patch.object(
+                service, "_lock_account_for_update", new_callable=AsyncMock
+            ) as mock_get:
+                mock_get.return_value = mock_account
+
+                # Create intent without explicitly setting is_test
+                intent = CreditIntent(
+                    account_identity=test_account_identity,
+                    amount_minor=500,
+                    currency="USD",
+                    description="Credit purchase",
+                    transaction_type=TransactionType.PURCHASE,
+                    external_transaction_id="stripe-123",
+                    idempotency_key=None,
+                )
+
+                await service.add_credits(intent)
+
+        # Verify is_test defaults to False
+        assert added_credit is not None
+        assert added_credit.is_test is False
+
 
 class TestAccountManagement:
     """Tests for account management operations."""

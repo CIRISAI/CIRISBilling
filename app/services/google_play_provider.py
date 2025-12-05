@@ -94,11 +94,18 @@ class GooglePlayProvider:
                 .execute()
             )
 
+            # purchaseType: None=real purchase, 0=test, 1=promo, 2=rewarded
+            purchase_type = result.get("purchaseType")
+            if purchase_type is not None:
+                purchase_type = int(purchase_type)
+
             logger.info(
                 "google_play_purchase_verified",
                 order_id=result.get("orderId"),
                 product_id=purchase_token.product_id,
                 purchase_state=result.get("purchaseState"),
+                purchase_type=purchase_type,
+                is_test=purchase_type == 0,
             )
 
             return GooglePlayPurchaseVerification(
@@ -110,6 +117,7 @@ class GooglePlayProvider:
                 purchase_state=int(result["purchaseState"]),
                 acknowledgement_state=int(result.get("acknowledgementState", 0)),
                 consumption_state=int(result.get("consumptionState", 0)),
+                purchase_type=purchase_type,
             )
 
         except HttpError as exc:

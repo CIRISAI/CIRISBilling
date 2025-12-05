@@ -566,9 +566,9 @@ class GooglePlayVerifyRequest(BaseModel):
 class GooglePlayVerifyResponse(BaseModel):
     """POST /v1/billing/google-play/verify response."""
 
-    verified: bool
+    success: bool  # Changed from 'verified' to match Android app expectation
     credits_added: int
-    balance_after: int
+    new_balance: int  # Changed from 'balance_after' to match Android app expectation
     order_id: str | None = None
     purchase_time_millis: int | None = None
     already_processed: bool = False
@@ -672,7 +672,9 @@ class LiteLLMUsageLogRequest(BaseModel):
     total_prompt_tokens: int = Field(..., ge=0, description="Total prompt tokens across all calls")
     total_completion_tokens: int = Field(..., ge=0, description="Total completion tokens")
     models_used: list[str] = Field(default_factory=list, description="List of models used")
-    actual_cost_cents: int = Field(..., ge=0, description="Actual cost to providers in cents")
+    actual_cost_cents: float = Field(
+        ..., ge=0, description="Actual cost to providers in cents (can be fractional)"
+    )
     duration_ms: int = Field(..., ge=0, description="Total interaction duration in milliseconds")
 
     # Error tracking

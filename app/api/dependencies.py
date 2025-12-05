@@ -10,11 +10,15 @@ from dataclasses import dataclass
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog import get_logger
 
 from app.config import settings
 from app.db.session import get_write_db
 from app.exceptions import AuthenticationError
 from app.services.api_key import APIKeyData, APIKeyService
+from app.services.token_revocation import token_revocation_service
+
+logger = get_logger(__name__)
 
 # ============================================================================
 # User JWT Authentication (for Android/mobile clients)
@@ -47,13 +51,15 @@ def _cleanup_google_token_cache() -> None:
         return
 
     now = time.time()
-    expired = [k for k, (_, _, exp) in _google_token_cache.items() if exp < now]
+    # Cache stores: (user_id, email, name, expiry_timestamp)
+    expired = [k for k, (_, _, _, exp) in _google_token_cache.items() if exp < now]
     for k in expired:
         del _google_token_cache[k]
 
 
 async def get_user_from_google_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_write_db),
 ) -> UserIdentity:
     """
     FastAPI dependency to validate Google ID token from Authorization header.
@@ -89,6 +95,14 @@ async def get_user_from_google_token(
         )
 
     token = credentials.credentials
+
+    # SECURITY: Check if token has been revoked
+    if await token_revocation_service.is_revoked(token, db):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # Check cache first (avoids network call to Google)
     if token in _google_token_cache:
@@ -209,6 +223,7 @@ async def get_user_from_google_token(
 
 async def get_optional_user_from_google_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_write_db),
 ) -> UserIdentity | None:
     """
     Optional Google ID token authentication - returns None if no token provided.
@@ -219,7 +234,7 @@ async def get_optional_user_from_google_token(
         return None
 
     try:
-        return await get_user_from_google_token(credentials)
+        return await get_user_from_google_token(credentials, db)
     except HTTPException:
         return None
 
@@ -333,6 +348,13 @@ async def get_api_key_or_jwt(
     - Service accounts using API keys (proxy-to-billing)
     - Android apps using Google ID tokens (app-to-billing direct)
     """
+    logger.info(
+        "get_api_key_or_jwt_called",
+        has_api_key=bool(x_api_key),
+        has_credentials=bool(credentials),
+        credentials_scheme=credentials.scheme if credentials else None,
+    )
+
     # Try API key first (service-to-service)
     if x_api_key:
         api_key_service = APIKeyService(db)
@@ -348,7 +370,7 @@ async def get_api_key_or_jwt(
 
     # Try JWT (user direct access)
     if credentials:
-        user = await get_user_from_google_token(credentials)
+        user = await get_user_from_google_token(credentials, db)
         return CombinedAuth(auth_type="jwt", user=user)
 
     # Neither provided

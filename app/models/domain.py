@@ -76,6 +76,7 @@ class CreditIntent:
     transaction_type: TransactionType
     external_transaction_id: str | None
     idempotency_key: str | None
+    is_test: bool = False  # Test purchase flag for revenue exclusion
 
     def __post_init__(self) -> None:
         """Validate credit constraints."""

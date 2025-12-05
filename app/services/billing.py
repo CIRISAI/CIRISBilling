@@ -385,6 +385,7 @@ class BillingService:
             description=intent.description,
             external_transaction_id=intent.external_transaction_id,
             idempotency_key=intent.idempotency_key,
+            is_test=intent.is_test,
         )
 
         self.session.add(credit)
@@ -597,6 +598,7 @@ class BillingService:
         uses_to_add: int,
         payment_id: str,
         amount_paid_minor: int,
+        is_test: bool = False,
     ) -> AccountData:
         """
         Add purchased uses to account balance.
@@ -635,6 +637,7 @@ class BillingService:
             description=f"Purchased ${amount_paid_minor/100:.2f} ({uses_to_add} uses) via Stripe",
             external_transaction_id=payment_id,
             idempotency_key=f"stripe-{payment_id}",
+            is_test=is_test,
         )
 
         await self.add_credits(credit_intent)

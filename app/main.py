@@ -62,16 +62,31 @@ app = FastAPI(
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Log detailed validation errors for debugging."""
     errors = exc.errors()
+
+    # Sanitize errors for JSON serialization (ctx may contain non-serializable objects)
+    sanitized_errors = []
+    for error in errors:
+        sanitized = {
+            "type": error.get("type"),
+            "loc": error.get("loc"),
+            "msg": error.get("msg"),
+            "input": error.get("input"),
+        }
+        # Convert ctx values to strings if present
+        if "ctx" in error:
+            sanitized["ctx"] = {k: str(v) for k, v in error["ctx"].items()}
+        sanitized_errors.append(sanitized)
+
     logger.warning(
         "validation_error",
         path=request.url.path,
         method=request.method,
-        errors=errors,
+        errors=sanitized_errors,
         body_preview=str(exc.body)[:500] if exc.body else None,
     )
     return JSONResponse(
         status_code=422,
-        content={"detail": errors},
+        content={"detail": sanitized_errors},
     )
 
 

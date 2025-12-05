@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -246,6 +247,9 @@ class Credit(Base):
 
     # Idempotency
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Test purchase flag (for excluding from revenue calculations)
+    is_test: Mapped[bool] = mapped_column(nullable=False, default=False)
 
     # Audit timestamp
     created_at: Mapped[datetime] = mapped_column(
@@ -636,7 +640,7 @@ class LLMUsageLog(Base):
     total_prompt_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     total_completion_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     models_used: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
-    actual_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_cost_cents: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Error tracking
@@ -659,4 +663,47 @@ class LLMUsageLog(Base):
         return (
             f"<LLMUsageLog(id={self.id}, interaction_id={self.interaction_id}, "
             f"calls={self.total_llm_calls}, cost_cents={self.actual_cost_cents})>"
+        )
+
+
+class RevokedToken(Base):
+    """
+    ORM model for revoked_tokens table.
+
+    Tracks revoked JWT tokens to prevent their use.
+    Tokens are identified by a hash of the token (not the token itself).
+    Includes TTL for automatic cleanup of expired entries.
+    """
+
+    __tablename__ = "revoked_tokens"
+
+    # Primary Key - hash of the token (SHA256)
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    # Token metadata
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # When the token was revoked
+    revoked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    # When the original token expires (for cleanup)
+    # After this time, the entry can be safely deleted
+    token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # Who revoked it (admin user ID or "system")
+    revoked_by: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    __table_args__ = (
+        Index("idx_revoked_tokens_user_id", "user_id"),
+        Index("idx_revoked_tokens_expires_at", "token_expires_at"),
+    )
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        return (
+            f"<RevokedToken(hash={self.token_hash[:16]}..., "
+            f"user_id={self.user_id}, reason={self.reason})>"
         )

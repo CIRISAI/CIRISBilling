@@ -18,6 +18,7 @@ from app.api.admin_dependencies import get_current_admin, require_admin_role
 from app.db.models import Account, AdminUser, APIKey, Charge, Credit, LLMUsageLog, ProviderConfig
 from app.db.session import get_read_db, get_write_db
 from app.services.api_key import APIKeyService
+from app.services.token_revocation import token_revocation_service
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -115,6 +116,48 @@ class APIKeyRotateResponse(BaseModel):
     old_key_expires_at: datetime = Field(
         ..., description="Old key will work until this time (24h grace)"
     )
+
+
+# ============================================================================
+# Token Revocation Models
+# ============================================================================
+
+
+class RevokeTokenRequest(BaseModel):
+    """Request to revoke a user's JWT token."""
+
+    user_id: str = Field(..., description="User ID (Google sub claim)")
+    reason: str = Field(..., min_length=1, max_length=255, description="Reason for revocation")
+    token_hash: str | None = Field(
+        None,
+        description="Optional: SHA-256 hash of specific token to revoke. If not provided, requires token.",
+    )
+    token: str | None = Field(
+        None,
+        description="Optional: Raw token to revoke (will be hashed). Either token or token_hash required.",
+    )
+    token_expires_at: datetime = Field(
+        ..., description="When the token naturally expires (for cleanup)"
+    )
+
+
+class RevokeTokenResponse(BaseModel):
+    """Response after revoking a token."""
+
+    token_hash_prefix: str = Field(..., description="First 16 chars of token hash (for reference)")
+    user_id: str
+    reason: str
+    revoked_at: datetime
+    token_expires_at: datetime
+    revoked_by: str
+
+
+class TokenRevocationStatsResponse(BaseModel):
+    """Token revocation statistics."""
+
+    cache_size: int = Field(..., description="Number of entries in memory cache")
+    active_revocations: int = Field(..., description="Number of active (non-expired) revocations")
+    cache_loaded: bool = Field(..., description="Whether cache has been loaded from DB")
 
 
 class AnalyticsOverviewResponse(BaseModel):
@@ -646,6 +689,123 @@ async def rotate_api_key(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
+
+
+# ============================================================================
+# Token Revocation
+# ============================================================================
+
+
+@router.post(
+    "/tokens/revoke", response_model=RevokeTokenResponse, status_code=status.HTTP_201_CREATED
+)
+async def revoke_user_token(
+    request: RevokeTokenRequest,
+    db: AsyncSession = Depends(get_write_db),
+    admin: AdminUser = Depends(require_admin_role),  # Admin only
+) -> RevokeTokenResponse:
+    """
+    Revoke a user's JWT token.
+
+    Once revoked, the token will be rejected on all future authentication attempts
+    until it naturally expires. This is useful for:
+    - Compromised tokens
+    - User account suspension
+    - Security incidents
+
+    Provide either the raw `token` (will be hashed) or `token_hash` (if you already have it).
+
+    Accessible by: admin only
+    """
+    # Validate that either token or token_hash is provided
+    if not request.token and not request.token_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either 'token' or 'token_hash' must be provided",
+        )
+
+    # Get or compute the token hash
+    if request.token:
+        token_hash = token_revocation_service.hash_token(request.token)
+        # Revoke using the raw token (service will hash it)
+        await token_revocation_service.revoke_token(
+            token=request.token,
+            user_id=request.user_id,
+            reason=request.reason,
+            token_exp=request.token_expires_at,
+            revoked_by=admin.email,
+            db=db,
+        )
+    else:
+        # Already have the hash - add directly to cache and DB
+        from app.db.models import RevokedToken as RevokedTokenModel
+
+        token_hash = request.token_hash
+        now = datetime.now(UTC)
+
+        revoked = RevokedTokenModel(
+            token_hash=token_hash,
+            user_id=request.user_id,
+            reason=request.reason,
+            revoked_at=now,
+            token_expires_at=request.token_expires_at,
+            revoked_by=admin.email,
+        )
+        await db.merge(revoked)
+        await db.commit()
+
+        # Add to cache
+        from app.services.token_revocation import TokenRevocationService
+
+        TokenRevocationService._cache[token_hash] = (
+            request.token_expires_at.timestamp(),
+            now.timestamp(),
+        )
+
+    logger.warning(
+        "admin_token_revoked",
+        admin_email=admin.email,
+        user_id=request.user_id,
+        reason=request.reason,
+        token_hash_prefix=token_hash[:16],
+    )
+
+    return RevokeTokenResponse(
+        token_hash_prefix=token_hash[:16],
+        user_id=request.user_id,
+        reason=request.reason,
+        revoked_at=datetime.now(UTC),
+        token_expires_at=request.token_expires_at,
+        revoked_by=admin.email,
+    )
+
+
+@router.get("/tokens/revocation-stats", response_model=TokenRevocationStatsResponse)
+async def get_revocation_stats(
+    db: AsyncSession = Depends(get_read_db),
+    admin: AdminUser = Depends(get_current_admin),  # Both admin and viewer
+) -> TokenRevocationStatsResponse:
+    """
+    Get token revocation statistics.
+
+    Shows cache size, active revocations, and cache status.
+
+    Accessible by: admin, viewer
+    """
+    stats = await token_revocation_service.get_revocation_stats(db)
+
+    logger.info(
+        "admin_revocation_stats",
+        admin_email=admin.email,
+        cache_size=stats["cache_size"],
+        active_revocations=stats["active_revocations"],
+    )
+
+    return TokenRevocationStatsResponse(
+        cache_size=stats["cache_size"],
+        active_revocations=stats["active_revocations"],
+        cache_loaded=stats["cache_loaded"],
+    )
 
 
 # ============================================================================

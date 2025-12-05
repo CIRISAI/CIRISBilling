@@ -143,6 +143,70 @@ class TestGooglePlayPurchaseVerification:
         assert verification.needs_acknowledgement() is False
         assert verification.needs_consumption() is False
 
+    def test_real_purchase_no_purchase_type(self):
+        """Test that purchase without purchaseType is real (not test)."""
+        verification = GooglePlayPurchaseVerification(
+            order_id="GPA.1234-5678-9012",
+            purchase_token="test_token_12345",
+            product_id="credits_100",
+            package_name="ai.ciris.agent",
+            purchase_time_millis=1700000000000,
+            purchase_state=0,
+            acknowledgement_state=0,
+            consumption_state=0,
+            purchase_type=None,  # Real purchase
+        )
+
+        assert verification.is_test_purchase() is False
+
+    def test_test_purchase_type_zero(self):
+        """Test that purchaseType=0 indicates test purchase."""
+        verification = GooglePlayPurchaseVerification(
+            order_id="GPA.1234-5678-9012",
+            purchase_token="test_token_12345",
+            product_id="credits_100",
+            package_name="ai.ciris.agent",
+            purchase_time_millis=1700000000000,
+            purchase_state=0,
+            acknowledgement_state=0,
+            consumption_state=0,
+            purchase_type=0,  # Test purchase (license tester)
+        )
+
+        assert verification.is_test_purchase() is True
+
+    def test_promo_purchase_type_one(self):
+        """Test that purchaseType=1 (promo) is not a test purchase."""
+        verification = GooglePlayPurchaseVerification(
+            order_id="GPA.1234-5678-9012",
+            purchase_token="test_token_12345",
+            product_id="credits_100",
+            package_name="ai.ciris.agent",
+            purchase_time_millis=1700000000000,
+            purchase_state=0,
+            acknowledgement_state=0,
+            consumption_state=0,
+            purchase_type=1,  # Promo purchase
+        )
+
+        assert verification.is_test_purchase() is False
+
+    def test_rewarded_purchase_type_two(self):
+        """Test that purchaseType=2 (rewarded) is not a test purchase."""
+        verification = GooglePlayPurchaseVerification(
+            order_id="GPA.1234-5678-9012",
+            purchase_token="test_token_12345",
+            product_id="credits_100",
+            package_name="ai.ciris.agent",
+            purchase_time_millis=1700000000000,
+            purchase_state=0,
+            acknowledgement_state=0,
+            consumption_state=0,
+            purchase_type=2,  # Rewarded purchase (watched ad)
+        )
+
+        assert verification.is_test_purchase() is False
+
     def test_immutable(self):
         """Test that GooglePlayPurchaseVerification is immutable."""
         verification = GooglePlayPurchaseVerification(

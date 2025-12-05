@@ -37,10 +37,15 @@ class GooglePlayPurchaseVerification:
     purchase_state: int  # 0=purchased, 1=canceled, 2=pending
     acknowledgement_state: int  # 0=not acknowledged, 1=acknowledged
     consumption_state: int  # 0=not consumed, 1=consumed
+    purchase_type: int | None = None  # None=real, 0=test, 1=promo, 2=rewarded
 
     def is_valid(self) -> bool:
         """Check if purchase is valid and can be credited."""
         return self.purchase_state == 0
+
+    def is_test_purchase(self) -> bool:
+        """Check if this is a test purchase (license tester account)."""
+        return self.purchase_type == 0
 
     def needs_acknowledgement(self) -> bool:
         """Check if purchase needs acknowledgement."""

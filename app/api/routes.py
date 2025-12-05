@@ -83,6 +83,9 @@ async def check_credit(
             wa_id=request.wa_id if request else None,
             tenant_id=request.tenant_id if request else None,
         )
+        # Use JWT token values as fallback for email/name
+        customer_email = request.customer_email or auth.user.email
+        display_name = request.display_name or auth.user.name
     else:
         identity = AccountIdentity(
             oauth_provider=request.oauth_provider,
@@ -90,12 +93,14 @@ async def check_credit(
             wa_id=request.wa_id,
             tenant_id=request.tenant_id,
         )
+        customer_email = request.customer_email
+        display_name = request.display_name
 
     # First check credit (creates account if needed)
     result = await service.check_credit(
         identity,
         request.context,
-        customer_email=request.customer_email,
+        customer_email=customer_email,
         marketing_opt_in=request.marketing_opt_in,
         marketing_opt_in_source=request.marketing_opt_in_source,
         user_role=request.user_role,
@@ -106,8 +111,8 @@ async def check_credit(
     # Always call update to ensure metadata is synced on every request
     await service.update_account_metadata(
         identity=identity,
-        customer_email=request.customer_email,
-        display_name=request.display_name,
+        customer_email=customer_email,
+        display_name=display_name,
         marketing_opt_in=request.marketing_opt_in if request.marketing_opt_in else None,
         marketing_opt_in_source=request.marketing_opt_in_source,
         user_role=request.user_role,
@@ -755,7 +760,7 @@ async def stripe_webhook(
 async def verify_google_play_purchase(
     request: GooglePlayVerifyRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:write")),
+    auth: CombinedAuth = Depends(require_permission_or_jwt("billing:write")),
 ) -> GooglePlayVerifyResponse:
     """
     Verify Google Play purchase and add credits to account.
@@ -771,7 +776,7 @@ async def verify_google_play_purchase(
     Idempotent: Same purchase_token can be called multiple times safely.
     Only the first call will add credits.
 
-    Requires: API key with billing:write permission.
+    Auth: API key with billing:write permission OR Bearer {google_id_token}
     """
     from sqlalchemy import select
     from structlog import get_logger
@@ -787,12 +792,21 @@ async def verify_google_play_purchase(
 
     service = BillingService(db)
 
-    identity = AccountIdentity(
-        oauth_provider=request.oauth_provider,
-        external_id=request.external_id,
-        wa_id=request.wa_id,
-        tenant_id=request.tenant_id,
-    )
+    # If JWT auth, use identity from token; otherwise use request body
+    if auth.auth_type == "jwt" and auth.user:
+        identity = AccountIdentity(
+            oauth_provider=auth.user.oauth_provider,
+            external_id=auth.user.external_id,
+            wa_id=request.wa_id if request else None,
+            tenant_id=request.tenant_id if request else None,
+        )
+    else:
+        identity = AccountIdentity(
+            oauth_provider=request.oauth_provider,
+            external_id=request.external_id,
+            wa_id=request.wa_id,
+            tenant_id=request.tenant_id,
+        )
 
     # Check if purchase already processed (idempotency)
     existing_stmt = select(GooglePlayPurchase).where(
@@ -815,9 +829,9 @@ async def verify_google_play_purchase(
             balance_after = existing_purchase.credits_added
 
         return GooglePlayVerifyResponse(
-            verified=True,
+            success=True,
             credits_added=existing_purchase.credits_added,
-            balance_after=balance_after,
+            new_balance=balance_after,
             order_id=existing_purchase.order_id,
             purchase_time_millis=existing_purchase.purchase_time_millis,
             already_processed=True,
@@ -889,6 +903,7 @@ async def verify_google_play_purchase(
             uses_to_add=credits_to_add,
             payment_id=verification.order_id,
             amount_paid_minor=0,  # Google Play handles payment
+            is_test=verification.is_test_purchase(),
         )
 
         # Get updated account
@@ -933,12 +948,13 @@ async def verify_google_play_purchase(
             product_id=request.product_id,
             credits_added=credits_to_add,
             account_id=str(account_data.account_id),
+            is_test=verification.is_test_purchase(),
         )
 
         return GooglePlayVerifyResponse(
-            verified=True,
+            success=True,
             credits_added=credits_to_add,
-            balance_after=account_data.paid_credits,
+            new_balance=account_data.paid_credits,
             order_id=verification.order_id,
             purchase_time_millis=verification.purchase_time_millis,
             already_processed=False,
@@ -1455,6 +1471,7 @@ async def user_verify_google_play_purchase(
             uses_to_add=credits_to_add,
             payment_id=verification.order_id,
             amount_paid_minor=0,  # Google Play handles payment
+            is_test=verification.is_test_purchase(),
         )
 
         # Get updated account
@@ -1500,6 +1517,7 @@ async def user_verify_google_play_purchase(
             product_id=request.product_id,
             credits_added=credits_to_add,
             account_id=str(account_data.account_id),
+            is_test=verification.is_test_purchase(),
         )
 
         return UserGooglePlayVerifyResponse(

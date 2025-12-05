@@ -2,16 +2,26 @@
 Application Configuration - Pydantic Settings for type-safe config.
 
 NO DICTIONARIES - All configuration is strongly typed.
+FAIL FAST - Critical config is validated at startup.
 """
 
+import sys
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ConfigurationError(Exception):
+    """Raised when critical configuration is missing or invalid."""
+
+    pass
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    # Database Configuration
-    database_url: str = "postgresql+asyncpg://billing_admin:password@localhost:5432/ciris_billing"
+    # Database Configuration - NO DEFAULT for production safety
+    database_url: str = ""
     database_read_url: str | None = None  # Optional read replica
     database_pool_size: int = 25
     database_max_overflow: int = 10
@@ -88,13 +98,49 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    @model_validator(mode="after")
+    def validate_critical_config(self) -> "Settings":
+        """
+        FAIL FAST: Validate critical configuration at startup.
+
+        The app MUST NOT start if critical config is missing.
+        This prevents silent failures that only manifest at runtime.
+        """
+        errors: list[str] = []
+
+        # DATABASE_URL is absolutely required
+        if not self.database_url:
+            errors.append("DATABASE_URL is required but empty or missing")
+        elif not self.database_url.startswith(("postgresql", "postgres")):
+            errors.append(
+                f"DATABASE_URL must be a PostgreSQL URL, got: {self.database_url[:20]}..."
+            )
+
+        # If we have errors, fail immediately with clear messaging
+        if errors:
+            error_msg = "\n".join(
+                [
+                    "",
+                    "=" * 60,
+                    "CRITICAL CONFIGURATION ERROR - APPLICATION CANNOT START",
+                    "=" * 60,
+                    *[f"  ✗ {e}" for e in errors],
+                    "=" * 60,
+                    "",
+                ]
+            )
+            print(error_msg, file=sys.stderr)
+            raise ConfigurationError(error_msg)
+
+        return self
+
     @property
     def read_database_url(self) -> str:
         """Get read database URL (fallback to primary if no replica)."""
         return self.database_read_url or self.database_url
 
 
-# Global settings instance
+# Global settings instance - validates at import time
 settings = Settings()
 
 
