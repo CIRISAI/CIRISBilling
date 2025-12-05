@@ -740,6 +740,7 @@ async def revoke_user_token(
         # Already have the hash - add directly to cache and DB
         from app.db.models import RevokedToken as RevokedTokenModel
 
+        assert request.token_hash is not None  # Validated above
         token_hash = request.token_hash
         now = datetime.now(UTC)
 

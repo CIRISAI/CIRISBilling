@@ -251,7 +251,7 @@ class TokenRevocationService:
                 db_removed=result.rowcount,
             )
 
-    async def get_revocation_stats(self, db: AsyncSession) -> dict:
+    async def get_revocation_stats(self, db: AsyncSession) -> dict[str, int | bool]:
         """Get statistics about revoked tokens."""
         now = datetime.now(UTC)
 
