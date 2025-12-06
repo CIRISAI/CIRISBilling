@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
     metrics_port: int = 9090
 
-    # Observability - Tracing
-    tracing_enabled: bool = True
+    # Observability - Tracing (disabled by default - enable when otel-collector is deployed)
+    tracing_enabled: bool = False
     otlp_endpoint: str = "http://otel-collector:4317"
     otlp_insecure: bool = True
     service_name: str = "ciris-billing-api"
