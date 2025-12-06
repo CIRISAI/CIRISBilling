@@ -60,7 +60,8 @@ jobs:
             ENCRYPT_KEY=$(docker run --rm -v cirisbilling_encryption_key:/vol alpine cat /vol/encryption_key)
 
             echo "=== Reading Play Integrity config from .env ==="
-            PLAY_INTEGRITY_SA=$(grep -oP '^PLAY_INTEGRITY_SERVICE_ACCOUNT=\K.*' /root/CIRISBilling/.env || echo "")
+            # Strip surrounding single quotes from service account JSON
+            PLAY_INTEGRITY_SA=$(grep -oP "^PLAY_INTEGRITY_SERVICE_ACCOUNT=\K.*" /root/CIRISBilling/.env | sed "s/^'//;s/'$//" || echo "")
             ANDROID_PKG=$(grep -oP '^ANDROID_PACKAGE_NAME=\K.*' /root/CIRISBilling/.env || echo "")
 
             echo "=== Running database migrations (before restart) ==="
@@ -83,6 +84,7 @@ jobs:
               -e LOG_LEVEL=INFO \
               -e "DATABASE_URL=$DB_URL" \
               -e GOOGLE_CLIENT_ID=265882853697-vsrucm66hl39jei1f5f20kb49om8t9pb.apps.googleusercontent.com \
+              -e GOOGLE_CLIENT_IDS=265882853697-vsrucm66hl39jei1f5f20kb49om8t9pb.apps.googleusercontent.com,265882853697-l421ndojcs5nm7lkln53jj29kf7kck91.apps.googleusercontent.com \
               -e "GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET" \
               -e "ADMIN_JWT_SECRET=$JWT_SECRET" \
               -e "ENCRYPTION_KEY=$ENCRYPT_KEY" \
