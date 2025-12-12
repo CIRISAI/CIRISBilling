@@ -63,6 +63,7 @@ jobs:
             # Strip surrounding single quotes from service account JSON
             PLAY_INTEGRITY_SA=$(grep -oP "^PLAY_INTEGRITY_SERVICE_ACCOUNT=\K.*" /root/CIRISBilling/.env | sed "s/^'//;s/'$//" || echo "")
             ANDROID_PKG=$(grep -oP '^ANDROID_PACKAGE_NAME=\K.*' /root/CIRISBilling/.env || echo "")
+            CIRISLENS_TOKEN=$(grep -oP '^CIRISLENS_TOKEN=\K.*' /root/CIRISBilling/.env || echo "")
 
             echo "=== Running database migrations (before restart) ==="
             docker exec ciris-billing-api sh -c "export DATABASE_URL='$DB_URL' && alembic upgrade head" || {
@@ -93,6 +94,7 @@ jobs:
               -e STRIPE_WEBHOOK_SECRET=whsec_placeholder \
               -e "PLAY_INTEGRITY_SERVICE_ACCOUNT=$PLAY_INTEGRITY_SA" \
               -e "ANDROID_PACKAGE_NAME=$ANDROID_PKG" \
+              -e "CIRISLENS_TOKEN=$CIRISLENS_TOKEN" \
               --network ciris-billing-network \
               ciris-billing-api:latest
 

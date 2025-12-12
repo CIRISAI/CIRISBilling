@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # Observability - Sampling
     trace_sample_rate: float = 1.0  # 1.0 = 100% sampling
 
+    # Observability - CIRISLens Log Shipping
+    cirislens_token: str = ""  # Service token from CIRISLens admin
+    cirislens_endpoint: str = "https://agents.ciris.ai/lens/api/v1/logs/ingest"
+
     # Payment Provider - Stripe
     stripe_api_key: str = ""  # Stripe secret key (sk_test_... or sk_live_...)
     stripe_webhook_secret: str = ""  # Stripe webhook signing secret (whsec_...)

@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import (
     CombinedAuth,
     UserIdentity,
+    get_api_key_or_jwt,
     get_user_from_google_token,
     require_permission,
-    require_permission_or_jwt,
 )
 from app.db.session import get_read_db, get_write_db
 from app.exceptions import (
@@ -61,7 +61,7 @@ router = APIRouter()
 async def check_credit(
     request: CreditCheckRequest,
     db: AsyncSession = Depends(get_write_db),
-    auth: CombinedAuth = Depends(require_permission_or_jwt("billing:read")),
+    auth: CombinedAuth = Depends(get_api_key_or_jwt),
 ) -> CreditCheckResponse:
     """
     Check if account has sufficient credits.
@@ -74,6 +74,14 @@ async def check_credit(
 
     When using JWT auth, oauth_provider and external_id are extracted from the token.
     """
+    # Check permission for API key auth (JWT auth is always allowed for own account)
+    if auth.auth_type == "api_key" and auth.api_key:
+        if "billing:read" not in auth.api_key.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing required permission: billing:read",
+            )
+
     service = BillingService(db)
 
     # If JWT auth, use identity from token; otherwise use request body
@@ -761,7 +769,7 @@ async def stripe_webhook(
 async def verify_google_play_purchase(
     request: GooglePlayVerifyRequest,
     db: AsyncSession = Depends(get_write_db),
-    auth: CombinedAuth = Depends(require_permission_or_jwt("billing:write")),
+    auth: CombinedAuth = Depends(get_api_key_or_jwt),
 ) -> GooglePlayVerifyResponse:
     """
     Verify Google Play purchase and add credits to account.
@@ -779,6 +787,13 @@ async def verify_google_play_purchase(
 
     Auth: API key with billing:write permission OR Bearer {google_id_token}
     """
+    # Check permission for API key auth (JWT auth is always allowed for own account)
+    if auth.auth_type == "api_key" and auth.api_key:
+        if "billing:write" not in auth.api_key.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing required permission: billing:write",
+            )
     from sqlalchemy import select
     from structlog import get_logger
 

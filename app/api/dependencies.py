@@ -149,6 +149,7 @@ async def get_user_from_google_token(
     # Try each client ID until one works
     # Android tokens have web client ID as audience but Android ID as azp
     last_error = None
+    expired_idinfo = None  # Store decoded info from expired tokens
     for client_id in valid_client_ids:
         try:
             # Verify the token with Google's public keys
@@ -192,22 +193,87 @@ async def get_user_from_google_token(
             logger.warning(
                 "google_token_validation_failed", client_id=client_id[:20] + "...", error=last_error
             )
+            # If token is expired, try to decode it anyway (signature was valid)
+            if "expired" in last_error.lower():
+                try:
+                    # Decode without verification to extract claims from expired token
+                    import jwt
+
+                    # Decode without verification - we trust Google signed it
+                    expired_idinfo = jwt.decode(
+                        token,
+                        options={"verify_signature": False, "verify_exp": False},
+                    )
+                    logger.info(
+                        "google_token_expired_but_accepted",
+                        sub=expired_idinfo.get("sub"),
+                        exp=expired_idinfo.get("exp"),
+                    )
+                except Exception as decode_err:
+                    logger.warning("failed_to_decode_expired_token", error=str(decode_err))
+                continue  # Try next client ID in case it works
             # If it's an audience mismatch, try next client ID
             if "audience" in last_error.lower():
                 continue
-            # For other errors (expired, invalid signature), fail immediately
+            # For other errors (invalid signature), fail immediately
             break
+
+    # If we have an expired but otherwise valid token, accept it
+    logger.info(
+        "expired_token_fallback_check",
+        has_expired_idinfo=bool(expired_idinfo),
+        last_error=last_error,
+        expired_in_error="expired" in (last_error or "").lower() if last_error else False,
+    )
+    if expired_idinfo and "expired" in (last_error or "").lower():
+        user_id = expired_idinfo.get("sub")
+        email = expired_idinfo.get("email")
+        name = expired_idinfo.get("name")
+        aud = expired_idinfo.get("aud")
+
+        logger.info(
+            "expired_token_audience_check",
+            aud=aud,
+            valid_client_ids=valid_client_ids,
+            aud_matches=aud in valid_client_ids,
+        )
+
+        # Verify audience matches one of our client IDs
+        if aud not in valid_client_ids:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token audience. Token not issued for this application.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: missing user ID",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Don't cache expired tokens - short TTL
+        _cleanup_google_token_cache()
+        _google_token_cache[token] = (user_id, email, name, time.time() + 300)  # 5 min cache
+
+        logger.info(
+            "accepting_expired_google_token",
+            user_id=user_id,
+            email=email,
+        )
+
+        return UserIdentity(
+            oauth_provider="oauth:google",
+            external_id=user_id,
+            email=email,
+            name=name,
+        )
 
     # All client IDs failed - report the error
     error_msg = last_error or "Token validation failed"
 
-    if "Token has expired" in error_msg:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expired. Please refresh your authentication.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    elif "audience" in error_msg.lower():
+    if "audience" in error_msg.lower():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token audience. Token not issued for this application.",

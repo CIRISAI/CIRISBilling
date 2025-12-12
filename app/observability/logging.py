@@ -2,6 +2,7 @@
 Structured Logging with Structlog.
 
 Provides JSON-formatted logs with correlation IDs and context.
+Ships logs to CIRISLens when CIRISLENS_TOKEN is configured.
 """
 
 import logging
@@ -12,6 +13,9 @@ import structlog
 from structlog.types import EventDict, Processor
 
 from app.config import settings
+
+# LogShipper instance (initialized when CIRISLENS_TOKEN is set)
+_log_shipper = None
 
 
 def add_app_context(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
@@ -36,13 +40,43 @@ def setup_logging() -> None:
         "request_id": "req-123",
         ...additional context
     }
+
+    When CIRISLENS_TOKEN is set, logs are also shipped to CIRISLens.
     """
+    global _log_shipper
+
     # Configure standard library logging
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
         level=getattr(logging, settings.log_level.upper()),
     )
+
+    # Setup CIRISLens log shipping if token is configured
+    if settings.cirislens_token:
+        try:
+            from app.logshipper import LogShipper, LogShipperHandler
+
+            _log_shipper = LogShipper(
+                service_name=settings.service_name,
+                token=settings.cirislens_token,
+                endpoint=settings.cirislens_endpoint,
+                batch_size=100,
+                flush_interval=5.0,
+            )
+
+            # Add handler to root logger
+            handler = LogShipperHandler(_log_shipper, min_level=logging.INFO)
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            logging.getLogger().addHandler(handler)
+
+            # Log that CIRISLens is enabled (this will also be shipped)
+            logging.info(
+                "CIRISLens log shipping enabled",
+                extra={"event": "cirislens_enabled", "endpoint": settings.cirislens_endpoint},
+            )
+        except Exception as e:
+            logging.warning(f"Failed to initialize CIRISLens LogShipper: {e}")
 
     # Processors for structlog
     processors: list[Processor] = [
@@ -85,6 +119,13 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
         logger.info("credit_check_performed", account_id=account_id, has_credit=True)
     """
     return structlog.get_logger(name)  # type: ignore[no-any-return]
+
+
+def get_log_shipper_stats() -> dict | None:
+    """Get CIRISLens log shipper stats (if enabled)."""
+    if _log_shipper:
+        return _log_shipper.get_stats()
+    return None
 
 
 # Context manager for adding request context

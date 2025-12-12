@@ -95,6 +95,7 @@ services:
       API_PORT: 8000
       API_HOST: 0.0.0.0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CIRISLENS_TOKEN: ${CIRISLENS_TOKEN:-}
     networks:
       - billing-network
     depends_on:
@@ -119,6 +120,7 @@ services:
       API_PORT: 8000
       API_HOST: 0.0.0.0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CIRISLENS_TOKEN: ${CIRISLENS_TOKEN:-}
     networks:
       - billing-network
     depends_on:
@@ -143,6 +145,7 @@ services:
       API_PORT: 8000
       API_HOST: 0.0.0.0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CIRISLENS_TOKEN: ${CIRISLENS_TOKEN:-}
     networks:
       - billing-network
     depends_on:
