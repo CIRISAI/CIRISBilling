@@ -294,6 +294,7 @@ class BillingService:
 
         # Update account balances and total uses
         account.paid_credits = credits_after
+        account.balance_minor = credits_after  # Keep balance_minor in sync
         account.free_uses_remaining = free_uses_after
         account.daily_free_uses_remaining = daily_free_after
         account.total_uses = account.total_uses + 1
@@ -398,6 +399,7 @@ class BillingService:
 
         # Update account paid credits
         account.paid_credits = credits_after
+        account.balance_minor = credits_after  # Keep balance_minor in sync
         await self.session.flush()
 
         # Verify paid credits was updated
