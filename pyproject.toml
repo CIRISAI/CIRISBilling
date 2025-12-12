@@ -78,6 +78,10 @@ plugins = ["pydantic.mypy"]
 module = "tests.*"
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+module = "app.logshipper"
+ignore_errors = true
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

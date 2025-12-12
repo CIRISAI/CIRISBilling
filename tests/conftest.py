@@ -2,6 +2,14 @@
 Pytest Configuration and Fixtures.
 """
 
+import os
+
+# Set required environment variables BEFORE importing app modules
+# This prevents ConfigurationError during test collection
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test_billing")
+os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client-id")
+os.environ.setdefault("ADMIN_JWT_SECRET", "test-secret-key-for-jwt-signing-min-32-chars")
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

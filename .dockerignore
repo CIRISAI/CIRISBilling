@@ -1,0 +1,72 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info
+dist
+build
+eggs
+parts
+var
+sdist
+develop-eggs
+.installed.cfg
+lib
+lib64
+venv
+.venv
+ENV
+env
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+coverage.xml
+*.cover
+.hypothesis
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Local development
+.env
+.env.local
+*.local
+
+# Documentation
+docs
+*.md
+!README.md
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Tests (not needed in production image)
+tests
+
+# Development files
+requirements-dev.txt
+Makefile
+docker-compose*.yml
+!docker-compose.prod.yml
+
+# Misc
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

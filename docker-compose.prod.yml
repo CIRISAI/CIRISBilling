@@ -1,0 +1,101 @@
+# Production Docker Compose for CIRIS Billing
+# Usage: docker-compose -f docker-compose.prod.yml up -d
+#
+# Required environment variables (set in .env or export):
+#   - DATABASE_URL: PostgreSQL connection string
+#   - GOOGLE_CLIENT_ID: Google OAuth client ID
+#   - GOOGLE_CLIENT_IDS: Comma-separated list of valid client IDs
+#   - GOOGLE_CLIENT_SECRET: Google OAuth client secret
+#   - ADMIN_JWT_SECRET: JWT signing secret (min 32 chars)
+#   - CIRISLENS_TOKEN: (optional) CIRISLens log shipping token
+
+version: "3.8"
+
+services:
+  billing-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ciris-billing-api:latest
+    container_name: ciris-billing-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Database
+      - DATABASE_URL=${DATABASE_URL}
+      # Google OAuth
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_IDS=${GOOGLE_CLIENT_IDS}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      # Security
+      - ADMIN_JWT_SECRET=${ADMIN_JWT_SECRET}
+      # Environment
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      # Observability
+      - CIRISLENS_TOKEN=${CIRISLENS_TOKEN:-}
+      # Stripe (optional)
+      - STRIPE_API_KEY=${STRIPE_API_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      # Play Integrity (optional)
+      - PLAY_INTEGRITY_SERVICE_ACCOUNT=${PLAY_INTEGRITY_SERVICE_ACCOUNT:-}
+      - ANDROID_PACKAGE_NAME=${ANDROID_PACKAGE_NAME:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ciris-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ciris-billing-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-ciris}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-ciris_billing}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ciris} -d ${POSTGRES_DB:-ciris_billing}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ciris-network
+    # Uncomment to expose postgres for debugging (NOT for production)
+    # ports:
+    #   - "5432:5432"
+
+  # Optional: Nginx reverse proxy with TLS
+  # Uncomment when ready for HTTPS
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: ciris-billing-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/certs:/etc/nginx/certs:ro
+  #   depends_on:
+  #     - billing-api
+  #   networks:
+  #     - ciris-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  ciris-network:
+    driver: bridge
