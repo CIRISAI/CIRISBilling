@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  IAM resources for CIRISBilling archive to S3 Glacier.
+  Creates a minimal-permission IAM user for uploading billing archives.
+
+  Usage:
+    aws cloudformation deploy \
+      --template-file billing-archive-iam.yaml \
+      --stack-name ciris-billing-archive-iam \
+      --capabilities CAPABILITY_NAMED_IAM \
+      --region us-east-1
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: ciris-billing-archive
+    Description: Name of the S3 bucket for billing archives
+
+  ArchivePrefix:
+    Type: String
+    Default: billing-archive
+    Description: S3 prefix for archive files
+
+Resources:
+  # IAM Policy - Minimal permissions for archive uploads
+  BillingArchivePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: CIRISBillingArchivePolicy
+      Description: Minimal permissions for uploading billing archives to S3
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Allow putting objects to the archive prefix
+          - Sid: AllowArchiveUpload
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:PutObjectTagging
+            Resource: !Sub 'arn:aws:s3:::${BucketName}/${ArchivePrefix}/*'
+
+          # Allow listing the bucket (needed to verify uploads)
+          - Sid: AllowListBucket
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !Sub 'arn:aws:s3:::${BucketName}'
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - !Sub '${ArchivePrefix}/*'
+
+          # Deny any delete operations (extra safety)
+          - Sid: DenyDelete
+            Effect: Deny
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+            Resource: !Sub 'arn:aws:s3:::${BucketName}/*'
+
+  # IAM User for the archive script
+  BillingArchiveUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: ciris-billing-archive
+      Tags:
+        - Key: Purpose
+          Value: Billing archive uploads to S3
+        - Key: Service
+          Value: CIRISBilling
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Attach policy to user
+  BillingArchiveUserPolicyAttachment:
+    Type: AWS::IAM::UserToGroupAddition
+    DependsOn: BillingArchiveGroup
+    Properties:
+      GroupName: !Ref BillingArchiveGroup
+      Users:
+        - !Ref BillingArchiveUser
+
+  # Group for easier management
+  BillingArchiveGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: CIRISBillingArchiveGroup
+      ManagedPolicyArns:
+        - !Ref BillingArchivePolicy
+
+  # Access key for the user
+  BillingArchiveAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref BillingArchiveUser
+      Status: Active
+
+Outputs:
+  UserName:
+    Description: IAM User name for billing archive
+    Value: !Ref BillingArchiveUser
+
+  AccessKeyId:
+    Description: Access Key ID (store securely!)
+    Value: !Ref BillingArchiveAccessKey
+
+  SecretAccessKey:
+    Description: Secret Access Key (SAVE THIS - only shown once!)
+    Value: !GetAtt BillingArchiveAccessKey.SecretAccessKey
+
+  PolicyArn:
+    Description: ARN of the archive policy
+    Value: !Ref BillingArchivePolicy
+
+  SetupInstructions:
+    Description: Instructions to configure the billing server
+    Value: |
+      1. Save the AccessKeyId and SecretAccessKey securely
+      2. On the billing server, create /root/.aws/credentials:
+         [default]
+         aws_access_key_id = <AccessKeyId>
+         aws_secret_access_key = <SecretAccessKey>
+         region = us-east-1
+      3. Test with: aws s3 ls s3://ciris-billing-archive/

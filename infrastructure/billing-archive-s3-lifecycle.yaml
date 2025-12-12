@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  S3 Lifecycle policy for CIRISBilling archives.
+  Transitions data to Glacier for 10-year retention.
+
+  NOTE: This template configures an EXISTING bucket.
+  Apply with:
+    aws cloudformation deploy \
+      --template-file billing-archive-s3-lifecycle.yaml \
+      --stack-name ciris-billing-archive-lifecycle \
+      --region us-east-1
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: ciris-billing-archive
+    Description: Name of the existing S3 bucket
+
+Resources:
+  # Note: Since the bucket already exists, we use a custom resource
+  # to apply the lifecycle configuration
+
+  LifecycleConfigLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CIRISBillingLifecycleLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3LifecycleConfig
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
+                Resource: !Sub 'arn:aws:s3:::${BucketName}'
+
+  LifecycleConfigLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CIRISBillingLifecycleConfig
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt LifecycleConfigLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+
+          def handler(event, context):
+              try:
+                  bucket = event['ResourceProperties']['BucketName']
+                  s3 = boto3.client('s3')
+
+                  if event['RequestType'] in ['Create', 'Update']:
+                      lifecycle_config = {
+                          'Rules': [
+                              {
+                                  'ID': 'BillingArchiveLifecycle',
+                                  'Status': 'Enabled',
+                                  'Filter': {'Prefix': 'billing-archive/'},
+                                  'Transitions': [
+                                      {'Days': 90, 'StorageClass': 'GLACIER_IR'},
+                                      {'Days': 365, 'StorageClass': 'DEEP_ARCHIVE'}
+                                  ],
+                                  'Expiration': {'Days': 3650}
+                              }
+                          ]
+                      }
+                      s3.put_bucket_lifecycle_configuration(
+                          Bucket=bucket,
+                          LifecycleConfiguration=lifecycle_config
+                      )
+                      print(f"Applied lifecycle policy to {bucket}")
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'Message': f'Lifecycle policy applied to {bucket}'
+                  })
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Error': str(e)
+                  })
+
+  ApplyLifecycleConfig:
+    Type: Custom::LifecycleConfig
+    Properties:
+      ServiceToken: !GetAtt LifecycleConfigLambda.Arn
+      BucketName: !Ref BucketName
+
+Outputs:
+  LifecycleRules:
+    Description: Applied lifecycle rules
+    Value: |
+      - 0-90 days: S3 Standard/Intelligent Tiering
+      - 90-365 days: Glacier Instant Retrieval
+      - 365-3650 days: Glacier Deep Archive
+      - 3650+ days: Expire (delete)
+
+  VerifyCommand:
+    Description: Command to verify lifecycle policy
+    Value: !Sub 'aws s3api get-bucket-lifecycle-configuration --bucket ${BucketName}'
