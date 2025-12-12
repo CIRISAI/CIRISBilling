@@ -102,12 +102,11 @@ def get_db_connection():
 
     # Parse the URL
     # Format: postgresql://user:pass@host:port/dbname
-    if db_url.startswith("postgresql://"):
-        db_url = db_url[13:]  # Remove prefix
-
-    # Handle asyncpg format
-    if db_url.startswith("+asyncpg"):
-        db_url = db_url[8:]
+    # Also handle: postgresql+asyncpg://user:pass@host:port/dbname
+    if db_url.startswith("postgresql+asyncpg://"):
+        db_url = db_url[22:]  # Remove "postgresql+asyncpg://"
+    elif db_url.startswith("postgresql://"):
+        db_url = db_url[13:]  # Remove "postgresql://"
 
     # Parse credentials and host
     if "@" in db_url:
