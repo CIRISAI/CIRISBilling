@@ -234,11 +234,11 @@ class PlayIntegrityService:
         request_details = token_payload.get("requestDetails", {})
         request_nonce = request_details.get("nonce", "")
 
-        # Verify nonce matches (base64 decoded)
+        # Verify nonce matches
         try:
-            # The nonce in the token is base64 encoded - decode for debugging if needed
-            # Google returns it as-is, so compare directly
-            _ = base64.urlsafe_b64decode(request_nonce + "==").decode()  # validate format
+            # The nonce is a base64-encoded SHA256 hash (binary data, NOT UTF-8 text)
+            # Just validate it's valid base64, don't try to decode as text
+            _ = base64.urlsafe_b64decode(request_nonce + "==")  # validate base64 format
             if request_nonce != expected_nonce:
                 # Try with padding variations
                 expected_padded = expected_nonce + "=" * (4 - len(expected_nonce) % 4)
