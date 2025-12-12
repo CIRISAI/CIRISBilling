@@ -82,6 +82,10 @@ disallow_untyped_defs = false
 module = "app.logshipper"
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+module = "scripts.*"
+ignore_errors = true
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

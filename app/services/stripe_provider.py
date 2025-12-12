@@ -185,7 +185,10 @@ class StripeProvider:
             logger.info("verifying_stripe_webhook", signature_present=bool(signature))
 
             # Verify webhook signature
-            event = stripe.Webhook.construct_event(payload, signature, self.webhook_secret)
+            # Note: type ignore needed for Python 3.12 where stripe stubs differ
+            event = stripe.Webhook.construct_event(  # type: ignore[no-untyped-call]
+                payload, signature, self.webhook_secret
+            )
 
             logger.info(
                 "stripe_webhook_verified",
