@@ -207,6 +207,16 @@ async def root() -> dict[str, str]:
     }
 
 
+def _is_internal_ip(ip: str) -> bool:
+    """Check if IP is localhost or private network."""
+    return (
+        ip in ("127.0.0.1", "::1", "localhost")
+        or ip.startswith("10.")
+        or ip.startswith("172.")
+        or ip.startswith("192.168.")
+    )
+
+
 @app.get("/metrics")
 async def metrics_endpoint(request: Request) -> Response:
     """
@@ -216,14 +226,20 @@ async def metrics_endpoint(request: Request) -> Response:
     In production, only accessible from localhost/internal networks.
     """
     if _is_production:
-        # Only allow metrics from localhost or internal IPs
+        # Check real client IP (X-Forwarded-For from reverse proxy)
+        forwarded_for = request.headers.get("X-Forwarded-For", "")
+        real_ip = request.headers.get("X-Real-IP", "")
         client_ip = request.client.host if request.client else ""
-        if not (
-            client_ip in ("127.0.0.1", "::1", "localhost")
-            or client_ip.startswith("10.")
-            or client_ip.startswith("172.")
-            or client_ip.startswith("192.168.")
-        ):
+
+        # Use forwarded IP if present (first IP in chain is original client)
+        if forwarded_for:
+            actual_ip = forwarded_for.split(",")[0].strip()
+        elif real_ip:
+            actual_ip = real_ip
+        else:
+            actual_ip = client_ip
+
+        if not _is_internal_ip(actual_ip):
             return JSONResponse(status_code=403, content={"detail": "Forbidden"})
     return PlainTextResponse(generate_latest())
 
