@@ -7,7 +7,7 @@ FAIL FAST - Critical config is validated at startup.
 
 import sys
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,8 +28,11 @@ class Settings(BaseSettings):
     database_pool_timeout: int = 30
     database_pool_recycle: int = 3600
 
-    # Environment
-    environment: str = "development"  # development, staging, production
+    # Environment (accepts ENV or ENVIRONMENT)
+    environment: str = Field(
+        default="development",
+        validation_alias=AliasChoices("ENV", "ENVIRONMENT", "environment"),
+    )
 
     # API Configuration
     api_host: str = "0.0.0.0"
