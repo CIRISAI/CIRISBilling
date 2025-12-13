@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     database_pool_timeout: int = 30
     database_pool_recycle: int = 3600
 
+    # Environment
+    environment: str = "development"  # development, staging, production
+
     # API Configuration
     api_host: str = "0.0.0.0"
     api_port: int = 8000

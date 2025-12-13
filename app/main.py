@@ -49,11 +49,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("database_engines_closed")
 
 
+# Disable docs in production
+_is_production = settings.environment.lower() == "production"
+
 app = FastAPI(
     title=settings.api_title,
     version=settings.api_version,
     description=settings.api_description,
     lifespan=lifespan,
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 
@@ -202,12 +208,23 @@ async def root() -> dict[str, str]:
 
 
 @app.get("/metrics")
-async def metrics_endpoint() -> Response:
+async def metrics_endpoint(request: Request) -> Response:
     """
     Prometheus metrics endpoint.
 
     Returns metrics in Prometheus text format.
+    In production, only accessible from localhost/internal networks.
     """
+    if _is_production:
+        # Only allow metrics from localhost or internal IPs
+        client_ip = request.client.host if request.client else ""
+        if not (
+            client_ip in ("127.0.0.1", "::1", "localhost")
+            or client_ip.startswith("10.")
+            or client_ip.startswith("172.")
+            or client_ip.startswith("192.168.")
+        ):
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
     return PlainTextResponse(generate_latest())
 
 
