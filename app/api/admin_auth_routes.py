@@ -63,7 +63,7 @@ async def google_login(
 
     # Default redirect to admin UI
     if not redirect_uri:
-        redirect_uri = f"{base_url}/admin"
+        redirect_uri = f"{base_url}/admin-ui/"
 
     # Build callback URL (where Google will redirect back to)
     callback_url = f"{base_url}/admin/oauth/callback"
