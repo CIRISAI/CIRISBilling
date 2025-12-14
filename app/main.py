@@ -198,10 +198,10 @@ app.include_router(router)  # Billing API routes (for agents)
 app.include_router(admin_auth_router)  # Admin OAuth routes
 app.include_router(admin_router)  # Admin API routes
 
-# Mount static files for admin UI
-_static_dir = Path(__file__).parent.parent / "static"
+# Mount static files for admin UI (at /admin-ui/ to avoid conflict with /admin API routes)
+_static_dir = Path(__file__).parent.parent / "static" / "admin"
 if _static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+    app.mount("/admin-ui", StaticFiles(directory=str(_static_dir), html=True), name="admin-ui")
 
 
 @app.get("/")
