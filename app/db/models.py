@@ -666,6 +666,134 @@ class LLMUsageLog(Base):
         )
 
 
+class ProductInventory(Base):
+    """
+    ORM model for product_inventory table.
+
+    Tracks tool/product credits per account (e.g., web search, image gen).
+    Separate from main LLM credits - each product has its own inventory.
+    """
+
+    __tablename__ = "product_inventory"
+
+    # Primary Key
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+
+    # Foreign Key to Account
+    account_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Product type (e.g., 'web_search', 'image_gen', 'tts')
+    product_type: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Free credits (initial grant + daily refresh)
+    free_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Paid credits (purchased)
+    paid_credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Daily refresh tracking
+    last_daily_refresh: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Usage tracking
+    total_uses: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        CheckConstraint("free_remaining >= 0", name="ck_product_inventory_free_non_negative"),
+        CheckConstraint("paid_credits >= 0", name="ck_product_inventory_paid_non_negative"),
+        CheckConstraint("total_uses >= 0", name="ck_product_inventory_uses_non_negative"),
+        UniqueConstraint("account_id", "product_type", name="uq_product_inventory_account_product"),
+        Index("idx_product_inventory_account_id", "account_id"),
+        Index("idx_product_inventory_product_type", "product_type"),
+    )
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        return (
+            f"<ProductInventory(id={self.id}, product={self.product_type}, "
+            f"free={self.free_remaining}, paid={self.paid_credits})>"
+        )
+
+
+class ProductUsageLog(Base):
+    """
+    ORM model for product_usage_logs table.
+
+    Immutable ledger of all tool/product usage for auditing.
+    """
+
+    __tablename__ = "product_usage_logs"
+
+    # Primary Key
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+
+    # Foreign Key to Account
+    account_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Product info
+    product_type: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Credit source used
+    used_free: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    used_paid: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    cost_minor: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )  # Actual cost charged (0 if free)
+
+    # Balance snapshots
+    free_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    free_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    paid_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    paid_after: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Request context
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Timestamp
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "idempotency_key", name="uq_product_usage_idempotency"),
+        Index("idx_product_usage_logs_account_id", "account_id"),
+        Index("idx_product_usage_logs_product_type", "product_type"),
+        Index("idx_product_usage_logs_created_at", "created_at"),
+        Index(
+            "idx_product_usage_logs_idempotency",
+            "idempotency_key",
+            postgresql_where=(idempotency_key.isnot(None)),
+        ),
+    )
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        return (
+            f"<ProductUsageLog(id={self.id}, product={self.product_type}, "
+            f"cost={self.cost_minor}, used_free={self.used_free})>"
+        )
+
+
 class RevokedToken(Base):
     """
     ORM model for revoked_tokens table.

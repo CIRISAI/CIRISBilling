@@ -97,10 +97,21 @@ class Settings(BaseSettings):
     # Android package name for integrity verification
     ANDROID_PACKAGE_NAME: str = ""  # e.g., "ai.ciris.agent"
 
-    # Pricing Configuration
+    # Pricing Configuration (LLM usage - legacy)
     free_uses_per_account: int = 10  # Free interactions for new users
     paid_uses_per_purchase: int = 20
     price_per_purchase_minor: int = 500  # $5.00 in cents
+
+    # Product Configuration - Tool Credits
+    # Web Search (Brave API)
+    product_web_search_free_initial: int = 10  # Free searches on account creation
+    product_web_search_free_daily: int = 3  # Free searches refreshed daily
+    product_web_search_price_minor: int = 1  # 1 cent per search
+
+    # Future products can be added here:
+    # product_image_gen_free_initial: int = 5
+    # product_image_gen_free_daily: int = 0
+    # product_image_gen_price_minor: int = 10  # 10 cents per image
 
     model_config = SettingsConfigDict(
         env_file=".env",
