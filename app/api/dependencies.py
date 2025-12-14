@@ -150,6 +150,7 @@ async def get_user_from_google_token(
     # Android tokens have web client ID as audience but Android ID as azp
     last_error = None
     expired_idinfo = None  # Store decoded info from expired tokens
+    tried_client_ids: list[str] = []  # Track which client IDs we tried
     for client_id in valid_client_ids:
         try:
             # Verify the token with Google's public keys
@@ -190,9 +191,7 @@ async def get_user_from_google_token(
 
         except ValueError as e:
             last_error = str(e)
-            logger.warning(
-                "google_token_validation_failed", client_id=client_id[:20] + "...", error=last_error
-            )
+            tried_client_ids.append(client_id[:20] + "...")
             # If token is expired, try to decode it anyway (signature was valid)
             if "expired" in last_error.lower():
                 try:
@@ -270,7 +269,13 @@ async def get_user_from_google_token(
             name=name,
         )
 
-    # All client IDs failed - report the error
+    # All client IDs failed - now log the warning
+    logger.warning(
+        "google_token_validation_failed_all_client_ids",
+        tried_client_ids=tried_client_ids,
+        error=last_error,
+    )
+
     error_msg = last_error or "Token validation failed"
 
     if "audience" in error_msg.lower():
