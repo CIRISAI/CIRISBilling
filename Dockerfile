@@ -44,6 +44,7 @@ RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
+COPY static/ ./static/
 
 # Create non-root user for security
 RUN useradd -m -u 1000 billing \

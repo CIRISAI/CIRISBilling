@@ -4,11 +4,13 @@ Main Application - FastAPI application setup.
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -195,6 +197,11 @@ async def logging_middleware(
 app.include_router(router)  # Billing API routes (for agents)
 app.include_router(admin_auth_router)  # Admin OAuth routes
 app.include_router(admin_router)  # Admin API routes
+
+# Mount static files for admin UI
+_static_dir = Path(__file__).parent.parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.get("/")
