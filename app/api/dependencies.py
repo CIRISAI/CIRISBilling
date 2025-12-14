@@ -15,6 +15,7 @@ from structlog import get_logger
 from app.config import settings
 from app.db.session import get_write_db
 from app.exceptions import AuthenticationError
+from app.models.domain import AccountIdentity
 from app.services.api_key import APIKeyData, APIKeyService
 from app.services.token_revocation import token_revocation_service
 
@@ -475,3 +476,35 @@ def require_permission_or_jwt(
         return auth
 
     return auth_checker
+
+
+# ============================================================================
+# Account Identity from JWT (for tool endpoints)
+# ============================================================================
+
+
+async def get_validated_identity(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_write_db),
+) -> AccountIdentity:
+    """
+    Get validated AccountIdentity from JWT token.
+
+    Used by tool endpoints that require user authentication.
+    Returns AccountIdentity directly, suitable for ProductInventoryService.
+    """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Provide Authorization: Bearer {google_id_token}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = await get_user_from_google_token(credentials, db)
+
+    return AccountIdentity(
+        oauth_provider=user.oauth_provider,
+        external_id=user.external_id,
+        wa_id=None,
+        tenant_id=None,
+    )

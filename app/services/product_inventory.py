@@ -278,8 +278,8 @@ class ProductInventoryService:
         else:
             # No credits available
             raise InsufficientCreditsError(
-                f"No {product_type} credits available. "
-                f"Free: {inventory.free_remaining}, Paid: {inventory.paid_credits}"
+                balance=inventory.free_remaining + inventory.paid_credits,
+                required=1,
             )
 
         # Increment usage counter

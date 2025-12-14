@@ -119,3 +119,11 @@ class AuthorizationError(BillingError):
     def __init__(self, required_permission: str) -> None:
         self.required_permission = required_permission
         super().__init__(f"Authorization failed: missing permission {required_permission}")
+
+
+class ResourceNotFoundError(BillingError):
+    """Raised when a requested resource is not found."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
