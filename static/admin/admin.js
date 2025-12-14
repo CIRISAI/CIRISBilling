@@ -17,8 +17,8 @@ let apiKeys = [];
 // ============================================================================
 
 function initiateGoogleLogin() {
-    // Redirect to Google OAuth (return to root after login)
-    const redirectUri = window.location.origin + '/';
+    // Redirect to Google OAuth (return to admin-ui after login)
+    const redirectUri = window.location.origin + '/admin-ui/';
     window.location.href = `${API_BASE_URL}/admin/oauth/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
 }
 
@@ -31,8 +31,8 @@ async function handleOAuthCallback() {
         // Store token
         localStorage.setItem(TOKEN_KEY, token);
 
-        // Remove token from URL
-        window.history.replaceState({}, document.title, '/');
+        // Remove token from URL (keep current path)
+        window.history.replaceState({}, document.title, window.location.pathname);
 
         // Fetch user info
         try {
