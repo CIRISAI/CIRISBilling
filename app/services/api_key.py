@@ -226,7 +226,7 @@ class APIKeyService:
             # Note: Could make this async background task for performance
             await self.db.commit()
 
-        logger.info("api_key_validated", key_id=str(api_key.id), name=api_key.name)
+        logger.debug("api_key_validated", key_id=str(api_key.id), name=api_key.name)
 
         return APIKeyData(
             key_id=api_key.id,

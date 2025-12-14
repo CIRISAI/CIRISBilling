@@ -523,7 +523,7 @@ class BillingService:
         from structlog import get_logger
 
         logger = get_logger(__name__)
-        logger.info(
+        logger.debug(
             "update_account_metadata_called",
             oauth_provider=identity.oauth_provider,
             external_id=identity.external_id,
@@ -550,7 +550,7 @@ class BillingService:
             account.customer_email = customer_email
             updated = True
         elif customer_email is not None:
-            logger.info(
+            logger.debug(
                 "update_account_metadata_email_unchanged",
                 email=customer_email,
             )
@@ -588,7 +588,7 @@ class BillingService:
                 external_id=identity.external_id,
             )
         else:
-            logger.info(
+            logger.debug(
                 "update_account_metadata_no_changes",
                 oauth_provider=identity.oauth_provider,
                 external_id=identity.external_id,

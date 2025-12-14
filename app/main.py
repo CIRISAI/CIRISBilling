@@ -145,7 +145,8 @@ async def logging_middleware(
     start_time = time.time()
     request_id = request.headers.get("X-Request-ID", "unknown")
 
-    logger.info(
+    # Only log request start at DEBUG level to reduce noise
+    logger.debug(
         "request_started",
         method=request.method,
         path=request.url.path,
@@ -164,14 +165,25 @@ async def logging_middleware(
         # Record metrics
         metrics.record_http_request(endpoint, method, response.status_code, duration)
 
-        logger.info(
-            "request_completed",
-            method=method,
-            path=endpoint,
-            status_code=response.status_code,
-            duration_seconds=duration,
-            request_id=request_id,
-        )
+        # Only log at INFO level for errors or slow requests (>1s)
+        if response.status_code >= 400 or duration > 1.0:
+            logger.info(
+                "request_completed",
+                method=method,
+                path=endpoint,
+                status_code=response.status_code,
+                duration_seconds=duration,
+                request_id=request_id,
+            )
+        else:
+            logger.debug(
+                "request_completed",
+                method=method,
+                path=endpoint,
+                status_code=response.status_code,
+                duration_seconds=duration,
+                request_id=request_id,
+            )
 
         return response
     except Exception as e:
