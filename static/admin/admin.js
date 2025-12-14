@@ -183,8 +183,8 @@ function showApp() {
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
 
-    // Update header with user info
-    document.getElementById('admin-name').textContent = currentUser.full_name;
+    // Update header with user info (API returns "name", not "full_name")
+    document.getElementById('admin-name').textContent = currentUser.name || currentUser.email;
     document.getElementById('admin-role').textContent = currentUser.role.replace('_', ' ').toUpperCase();
 
     // Load dashboard
@@ -229,16 +229,18 @@ async function loadDashboard() {
     try {
         const data = await apiRequest('/admin/analytics/overview');
 
-        // Update metrics cards
-        document.getElementById('total-users').textContent = data.metrics.total_users.toLocaleString();
-        document.getElementById('revenue-today').textContent = formatMoney(data.metrics.revenue_today_minor);
-        document.getElementById('active-today').textContent = data.metrics.active_users_today.toLocaleString();
-        document.getElementById('total-charges').textContent = data.metrics.total_charges_today.toLocaleString();
+        // Update metrics cards (API returns flat structure)
+        document.getElementById('total-users').textContent = data.total_users.toLocaleString();
+        document.getElementById('revenue-today').textContent = formatMoney(data.total_charged_all_time);
+        document.getElementById('active-today').textContent = data.active_users.toLocaleString();
+        document.getElementById('total-charges').textContent = data.charges_last_24h.toLocaleString();
 
-        // Update change percentages
-        const revenueChange = data.metrics.revenue_change_percent;
+        // Update change percentages (show 24h vs 7d comparison)
+        const charges24h = data.charges_last_24h;
+        const avgDaily7d = data.charges_last_7d / 7;
+        const changePercent = avgDaily7d > 0 ? ((charges24h - avgDaily7d) / avgDaily7d * 100) : 0;
         document.getElementById('revenue-change').textContent =
-            `${revenueChange > 0 ? '+' : ''}${revenueChange.toFixed(1)}% vs yesterday`;
+            `${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% vs 7d avg`;
 
         // Load recent activity
         await loadRecentActivity();
@@ -266,10 +268,11 @@ async function loadRecentActivity() {
 
 async function loadUsers() {
     try {
-        const data = await apiRequest('/admin/users?page=1&limit=100');
+        const data = await apiRequest('/admin/users?page=1&page_size=100');
         users = data.users;
 
-        document.getElementById('user-count').textContent = data.pagination.total;
+        // API returns flat structure: data.total, data.page, data.page_size, data.total_pages
+        document.getElementById('user-count').textContent = data.total;
         renderUsersTable(users);
 
     } catch (error) {
@@ -359,8 +362,9 @@ function viewUser(accountId) {
 
 async function loadAPIKeys() {
     try {
+        // API returns a direct array, not wrapped in { api_keys: [] }
         const data = await apiRequest('/admin/api-keys');
-        apiKeys = data.api_keys;
+        apiKeys = Array.isArray(data) ? data : [];
 
         document.getElementById('api-key-count').textContent = apiKeys.length;
         renderAPIKeys(apiKeys);
