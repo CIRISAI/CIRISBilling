@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.api.admin_auth_routes import router as admin_auth_router
 from app.api.admin_routes import router as admin_router
 from app.api.routes import router
+from app.api.status_routes import router as status_router
 from app.api.tool_routes import router as tool_router
 from app.config import settings
 from app.db.session import close_engines
@@ -209,6 +210,7 @@ async def logging_middleware(
 # Register routes
 app.include_router(router)  # Billing API routes (for agents)
 app.include_router(tool_router)  # Tool credits API (web search, etc.)
+app.include_router(status_router)  # Status/health checks (public)
 app.include_router(admin_auth_router)  # Admin OAuth routes
 app.include_router(admin_router)  # Admin API routes
 
