@@ -45,6 +45,8 @@ except ImportError as e:
 S3_BUCKET = os.getenv("ARCHIVE_S3_BUCKET", "ciris-billing-archive")
 S3_PREFIX = os.getenv("ARCHIVE_S3_PREFIX", "billing-archive")
 S3_REGION = os.getenv("AWS_REGION", "us-east-1")
+# AWS Account ID for bucket ownership verification (security best practice)
+AWS_ACCOUNT_ID = os.getenv("AWS_ACCOUNT_ID")
 
 # Database connection - reads from Docker volume or environment
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -239,19 +241,24 @@ def upload_to_s3(local_path: Path, year: int, month: int, dry_run: bool = False)
     s3 = boto3.client("s3", region_name=S3_REGION)
 
     try:
+        extra_args: dict[str, Any] = {
+            "StorageClass": "INTELLIGENT_TIERING",
+            "ContentType": "application/octet-stream",
+            "Metadata": {
+                "archive-version": "1.0",
+                "source": "ciris-billing",
+                "created-at": datetime.now(UTC).isoformat(),
+            },
+        }
+        # Add ExpectedBucketOwner if AWS_ACCOUNT_ID is configured (security best practice)
+        if AWS_ACCOUNT_ID:
+            extra_args["ExpectedBucketOwner"] = AWS_ACCOUNT_ID
+
         s3.upload_file(
             str(local_path),
             S3_BUCKET,
             s3_key,
-            ExtraArgs={
-                "StorageClass": "INTELLIGENT_TIERING",
-                "ContentType": "application/octet-stream",
-                "Metadata": {
-                    "archive-version": "1.0",
-                    "source": "ciris-billing",
-                    "created-at": datetime.now(UTC).isoformat(),
-                },
-            },
+            ExtraArgs=extra_args,
         )
         logger.info(f"  Uploaded to s3://{S3_BUCKET}/{s3_key}")
     except ClientError as e:
@@ -269,7 +276,12 @@ def verify_s3_upload(s3_key: str, expected_checksum: str, dry_run: bool = False)
     s3 = boto3.client("s3", region_name=S3_REGION)
 
     try:
-        response = s3.head_object(Bucket=S3_BUCKET, Key=s3_key)
+        head_args: dict[str, str] = {"Bucket": S3_BUCKET, "Key": s3_key}
+        # Add ExpectedBucketOwner if AWS_ACCOUNT_ID is configured (security best practice)
+        if AWS_ACCOUNT_ID:
+            head_args["ExpectedBucketOwner"] = AWS_ACCOUNT_ID
+
+        response = s3.head_object(**head_args)
         logger.debug(f"  Verified {s3_key}: {response['ContentLength']} bytes")
         return True
     except ClientError as e:
