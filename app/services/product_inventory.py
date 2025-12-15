@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
@@ -100,6 +101,60 @@ class ProductInventoryService:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _get_or_create_account(self, identity: AccountIdentity) -> Account:
+        """
+        Get account by identity, creating it if it doesn't exist.
+
+        Same approach as BillingService.check_credit - auto-creates new accounts
+        with free uses on first access.
+        """
+        account = await self._find_account_by_identity(identity)
+
+        if account is not None:
+            return account
+
+        # Create new account with free uses (same as BillingService.check_credit)
+        new_account = Account(
+            oauth_provider=identity.oauth_provider,
+            external_id=identity.external_id,
+            wa_id=identity.wa_id,
+            tenant_id=identity.tenant_id,
+            customer_email=None,
+            balance_minor=0,
+            currency="USD",
+            plan_name="free",
+            free_uses_remaining=settings.free_uses_per_account,
+            total_uses=0,
+            marketing_opt_in=False,
+            marketing_opt_in_at=None,
+            marketing_opt_in_source=None,
+            user_role=None,
+            agent_id=None,
+        )
+        new_account.status = "active"
+
+        self.session.add(new_account)
+
+        try:
+            await self.session.flush()
+            await self.session.commit()
+
+            logger.info(
+                "account_auto_created_for_tools",
+                oauth_provider=identity.oauth_provider,
+                external_id=identity.external_id,
+                free_uses=settings.free_uses_per_account,
+            )
+
+            return new_account
+        except IntegrityError:
+            # Race condition - account created by another request
+            await self.session.rollback()
+            account = await self._find_account_by_identity(identity)
+            if account is not None:
+                return account
+            raise ResourceNotFoundError(f"Failed to create account for identity: {identity}")
+
     async def get_or_create_inventory(
         self, account_id: UUID, product_type: str
     ) -> ProductInventory:
@@ -177,10 +232,8 @@ class ProductInventoryService:
         return True
 
     async def get_balance(self, identity: AccountIdentity, product_type: str) -> ProductBalance:
-        """Get current balance for a product."""
-        account = await self._find_account_by_identity(identity)
-        if account is None:
-            raise ResourceNotFoundError(f"Account not found for identity: {identity}")
+        """Get current balance for a product. Auto-creates account if needed."""
+        account = await self._get_or_create_account(identity)
 
         inventory = await self.get_or_create_inventory(account.id, product_type)
 
@@ -217,11 +270,10 @@ class ProductInventoryService:
         Charge one unit of a product.
 
         Uses free credits first, then paid credits.
+        Auto-creates account and inventory with initial free credits if needed.
         Raises InsufficientCreditsError if no credits available.
         """
-        account = await self._find_account_by_identity(identity)
-        if account is None:
-            raise ResourceNotFoundError(f"Account not found for identity: {identity}")
+        account = await self._get_or_create_account(identity)
 
         inventory = await self.get_or_create_inventory(account.id, product_type)
         config = PRODUCT_CONFIGS[product_type]
@@ -334,10 +386,8 @@ class ProductInventoryService:
         credits: int,
         source: str = "purchase",
     ) -> ProductBalance:
-        """Add paid credits to a product inventory."""
-        account = await self._find_account_by_identity(identity)
-        if account is None:
-            raise ResourceNotFoundError(f"Account not found for identity: {identity}")
+        """Add paid credits to a product inventory. Auto-creates account if needed."""
+        account = await self._get_or_create_account(identity)
 
         inventory = await self.get_or_create_inventory(account.id, product_type)
 
@@ -369,10 +419,8 @@ class ProductInventoryService:
         )
 
     async def get_all_balances(self, identity: AccountIdentity) -> list[ProductBalance]:
-        """Get balances for all product types for an account."""
-        account = await self._find_account_by_identity(identity)
-        if account is None:
-            raise ResourceNotFoundError(f"Account not found for identity: {identity}")
+        """Get balances for all product types for an account. Auto-creates account if needed."""
+        account = await self._get_or_create_account(identity)
 
         balances = []
         for product_type in PRODUCT_CONFIGS:
