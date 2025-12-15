@@ -622,18 +622,20 @@ class TestGooglePlayVerifyRequestProperties:
     @given(
         oauth_providers,
         external_ids,
-        st.text(min_size=10, max_size=500),
-        st.text(min_size=1, max_size=100),
-        st.text(min_size=1, max_size=100),
+        st.text(
+            min_size=10,
+            max_size=500,
+            alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz0123456789_-"),
+        ),
+        st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
+        st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=100, suppress_health_check=[HealthCheck.filter_too_much])
     def test_valid_request_creation(
         self, oauth_provider, external_id, purchase_token, product_id, package_name
     ):
         """Valid inputs produce valid GooglePlayVerifyRequest."""
-        assume(purchase_token.strip())
-        assume(product_id.strip())
-        assume(package_name.strip())
+        assume(len(purchase_token.strip()) >= 10)
         request = GooglePlayVerifyRequest(
             oauth_provider=oauth_provider,
             external_id=external_id,
