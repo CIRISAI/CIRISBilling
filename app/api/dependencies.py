@@ -58,6 +58,36 @@ def _cleanup_google_token_cache() -> None:
         del _google_token_cache[k]
 
 
+def _get_cached_user(token: str) -> UserIdentity | None:
+    """Check cache for a valid token. Returns UserIdentity if cached and not expired."""
+    import time
+
+    if token not in _google_token_cache:
+        return None
+
+    user_id, email, name, expiry = _google_token_cache[token]
+    if time.time() < expiry:
+        return UserIdentity(
+            oauth_provider="oauth:google",
+            external_id=user_id,
+            email=email,
+            name=name,
+        )
+
+    # Token expired, remove from cache
+    del _google_token_cache[token]
+    return None
+
+
+def _raise_auth_error(detail: str) -> None:
+    """Raise a 401 HTTPException with WWW-Authenticate header. Always raises."""
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 async def get_user_from_google_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_write_db),
@@ -89,35 +119,18 @@ async def get_user_from_google_token(
     import time
 
     if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        _raise_auth_error("Authorization header required")
 
     token = credentials.credentials
 
     # SECURITY: Check if token has been revoked
     if await token_revocation_service.is_revoked(token, db):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has been revoked",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        _raise_auth_error("Token has been revoked")
 
     # Check cache first (avoids network call to Google)
-    if token in _google_token_cache:
-        user_id, email, name, expiry = _google_token_cache[token]
-        if time.time() < expiry:
-            return UserIdentity(
-                oauth_provider="oauth:google",
-                external_id=user_id,
-                email=email,
-                name=name,
-            )
-        else:
-            # Token expired, remove from cache
-            del _google_token_cache[token]
+    cached_user = _get_cached_user(token)
+    if cached_user:
+        return cached_user
 
     # Import Google auth library
     try:
@@ -137,14 +150,9 @@ async def get_user_from_google_token(
             detail="Server misconfiguration: no Google client IDs configured",
         )
 
-    # Import logger for debugging
-    from structlog import get_logger
-
-    logger = get_logger(__name__)
-    logger.info(
+    logger.debug(
         "google_token_validation_starting",
         client_ids_count=len(valid_client_ids),
-        client_ids=valid_client_ids,
     )
 
     # Try each client ID until one works
@@ -198,7 +206,7 @@ async def get_user_from_google_token(
             # For other errors (expired, invalid signature), fail immediately
             break
 
-    # All client IDs failed - log the warning
+    # All client IDs failed - log and raise appropriate error
     logger.warning(
         "google_token_validation_failed_all_client_ids",
         tried_client_ids=tried_client_ids,
@@ -206,19 +214,9 @@ async def get_user_from_google_token(
     )
 
     error_msg = last_error or "Token validation failed"
-
     if "audience" in error_msg.lower():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token audience. Token not issued for this application.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid Google ID token: {error_msg}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        _raise_auth_error("Invalid token audience. Token not issued for this application.")
+    _raise_auth_error(f"Invalid Google ID token: {error_msg}")
 
 
 async def get_optional_user_from_google_token(
