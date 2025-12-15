@@ -21,7 +21,7 @@ run_test() {
     local status=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | head -n-1)
 
-    if [ "$status" = "$expected_status" ]; then
+    if [[ "$status" = "$expected_status" ]]; then
         echo -e "${GREEN}✓${NC} $test_name"
         ((PASSED++))
         return 0
@@ -230,7 +230,7 @@ echo -e "  ${RED}Failed:${NC} $FAILED"
 echo -e "  Total:  $(($PASSED + $FAILED))"
 echo ""
 
-if [ $FAILED -eq 0 ]; then
+if [[ $FAILED -eq 0 ]]; then
     echo -e "${GREEN}✓ All tests passed!${NC}"
     echo ""
     exit 0

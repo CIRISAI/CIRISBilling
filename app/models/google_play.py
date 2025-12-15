@@ -34,10 +34,10 @@ class GooglePlayPurchaseVerification:
     product_id: str
     package_name: str
     purchase_time_millis: int
-    purchase_state: int  # 0=purchased, 1=canceled, 2=pending
-    acknowledgement_state: int  # 0=not acknowledged, 1=acknowledged
-    consumption_state: int  # 0=not consumed, 1=consumed
-    purchase_type: int | None = None  # None=real, 0=test, 1=promo, 2=rewarded
+    purchase_state: int  # 0: purchased, 1: canceled, 2: pending
+    acknowledgement_state: int  # 0: not acknowledged, 1: acknowledged
+    consumption_state: int  # 0: not consumed, 1: consumed
+    purchase_type: int | None = None  # None: real, 0: test, 1: promo, 2: rewarded
 
     def is_valid(self) -> bool:
         """Check if purchase is valid and can be credited."""

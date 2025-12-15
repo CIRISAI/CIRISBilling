@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     service_name: str = "ciris-billing-api"
 
     # Observability - Sampling
-    trace_sample_rate: float = 1.0  # 1.0 = 100% sampling
+    trace_sample_rate: float = 1.0  # 1.0 means 100% sampling
 
     # Observability - CIRISLens Log Shipping
     cirislens_token: str = ""  # Service token from CIRISLens admin

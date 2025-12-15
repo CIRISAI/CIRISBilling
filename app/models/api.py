@@ -10,6 +10,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+# Field description constants (avoid duplication)
+_DESC_EMAIL = "User email address for receipts and notifications"
+_DESC_DISPLAY_NAME = "User display name"
+_DESC_USER_ROLE = "User role (admin, authority, observer)"
+_OAUTH_PREFIX = "oauth:"
+_ERR_OAUTH_PREFIX = 'oauth_provider must start with "oauth:"'
+
 
 class AccountStatus(str, Enum):
     """Account status enumeration."""
@@ -55,19 +62,17 @@ class CreditCheckRequest(BaseModel):
         None,
         min_length=1,
         max_length=255,
-        description="User email address for receipts and notifications",
+        description=_DESC_EMAIL,
     )
     display_name: str | None = Field(
         None,
         min_length=1,
         max_length=255,
-        description="User display name",
+        description=_DESC_DISPLAY_NAME,
     )
 
     # User metadata
-    user_role: str | None = Field(
-        None, max_length=50, description="User role (admin, authority, observer)"
-    )
+    user_role: str | None = Field(None, max_length=50, description=_DESC_USER_ROLE)
     agent_id: str | None = Field(
         None, max_length=255, description="Unique agent ID making the request"
     )
@@ -84,8 +89,8 @@ class CreditCheckRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
 
@@ -138,19 +143,17 @@ class CreateChargeRequest(BaseModel):
         None,
         min_length=1,
         max_length=255,
-        description="User email address for receipts and notifications",
+        description=_DESC_EMAIL,
     )
     display_name: str | None = Field(
         None,
         min_length=1,
         max_length=255,
-        description="User display name",
+        description=_DESC_DISPLAY_NAME,
     )
 
     # User metadata
-    user_role: str | None = Field(
-        None, max_length=50, description="User role (admin, authority, observer)"
-    )
+    user_role: str | None = Field(None, max_length=50, description=_DESC_USER_ROLE)
     agent_id: str | None = Field(
         None, max_length=255, description="Unique agent ID making the request"
     )
@@ -167,8 +170,8 @@ class CreateChargeRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
     @field_validator("currency")
@@ -236,19 +239,17 @@ class AddCreditsRequest(BaseModel):
         None,
         min_length=1,
         max_length=255,
-        description="User email address for receipts and notifications",
+        description=_DESC_EMAIL,
     )
     display_name: str | None = Field(
         None,
         min_length=1,
         max_length=255,
-        description="User display name",
+        description=_DESC_DISPLAY_NAME,
     )
 
     # User metadata
-    user_role: str | None = Field(
-        None, max_length=50, description="User role (admin, authority, observer)"
-    )
+    user_role: str | None = Field(None, max_length=50, description=_DESC_USER_ROLE)
     agent_id: str | None = Field(
         None, max_length=255, description="Unique agent ID making the request"
     )
@@ -265,8 +266,8 @@ class AddCreditsRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
     @field_validator("currency")
@@ -306,10 +307,8 @@ class PurchaseRequest(BaseModel):
     return_url: str | None = Field(None, min_length=1)
 
     # User metadata
-    display_name: str | None = Field(None, max_length=255, description="User display name")
-    user_role: str | None = Field(
-        None, max_length=50, description="User role (admin, authority, observer)"
-    )
+    display_name: str | None = Field(None, max_length=255, description=_DESC_DISPLAY_NAME)
+    user_role: str | None = Field(None, max_length=50, description=_DESC_USER_ROLE)
     agent_id: str | None = Field(
         None, max_length=255, description="Unique agent ID making the request"
     )
@@ -326,8 +325,8 @@ class PurchaseRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
 
@@ -383,8 +382,8 @@ class TransactionListRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
 
@@ -417,19 +416,17 @@ class CreateAccountRequest(BaseModel):
         None,
         min_length=1,
         max_length=255,
-        description="User email address for receipts and notifications",
+        description=_DESC_EMAIL,
     )
     display_name: str | None = Field(
         None,
         min_length=1,
         max_length=255,
-        description="User display name",
+        description=_DESC_DISPLAY_NAME,
     )
 
     # User metadata
-    user_role: str | None = Field(
-        None, max_length=50, description="User role (admin, authority, observer)"
-    )
+    user_role: str | None = Field(None, max_length=50, description=_DESC_USER_ROLE)
     agent_id: str | None = Field(
         None, max_length=255, description="Unique agent ID making the request"
     )
@@ -446,8 +443,8 @@ class CreateAccountRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
     @field_validator("currency")
@@ -551,8 +548,8 @@ class GooglePlayVerifyRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
     @field_validator("purchase_token")
@@ -600,8 +597,8 @@ class LiteLLMAuthRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
 
@@ -636,8 +633,8 @@ class LiteLLMChargeRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if not v.startswith("oauth:"):
-            raise ValueError('oauth_provider must start with "oauth:"')
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
         return v
 
 
@@ -686,9 +683,9 @@ class LiteLLMUsageLogRequest(BaseModel):
     @classmethod
     def validate_oauth_provider(cls, v: str) -> str:
         """Ensure oauth_provider follows oauth: prefix convention."""
-        if isinstance(v, str) and not v.startswith("oauth:"):
+        if isinstance(v, str) and not v.startswith(_OAUTH_PREFIX):
             # Auto-fix by prepending oauth: if missing
-            return f"oauth:{v}"
+            return f"{_OAUTH_PREFIX}{v}"
         return v
 
 

@@ -56,6 +56,35 @@ from app.services.billing import BillingService
 
 router = APIRouter()
 
+# Permission and error message constants (avoid duplication)
+_PERM_BILLING_READ = "billing:read"
+_PERM_BILLING_WRITE = "billing:write"
+_ERR_ACCOUNT_NOT_FOUND = "Account not found"
+_DEFAULT_PACKAGE_NAME = "ai.ciris.agent"
+
+
+def _resolve_identity_from_auth(
+    auth: CombinedAuth,
+    request_oauth: str,
+    request_external_id: str,
+    request_wa_id: str | None = None,
+    request_tenant_id: str | None = None,
+) -> AccountIdentity:
+    """Resolve AccountIdentity from auth context or request body."""
+    if auth.auth_type == "jwt" and auth.user:
+        return AccountIdentity(
+            oauth_provider=auth.user.oauth_provider,
+            external_id=auth.user.external_id,
+            wa_id=request_wa_id,
+            tenant_id=request_tenant_id,
+        )
+    return AccountIdentity(
+        oauth_provider=request_oauth,
+        external_id=request_external_id,
+        wa_id=request_wa_id,
+        tenant_id=request_tenant_id,
+    )
+
 
 @router.post("/v1/billing/credits/check", response_model=CreditCheckResponse)
 async def check_credit(
@@ -76,10 +105,10 @@ async def check_credit(
     """
     # Check permission for API key auth (JWT auth is always allowed for own account)
     if auth.auth_type == "api_key" and auth.api_key:
-        if "billing:read" not in auth.api_key.permissions:
+        if _PERM_BILLING_READ not in auth.api_key.permissions:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Missing required permission: billing:read",
+                detail=f"Missing required permission: {_PERM_BILLING_READ}",
             )
 
     service = BillingService(db)
@@ -139,7 +168,7 @@ async def check_credit(
 async def create_charge(
     request: CreateChargeRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:write")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
 ) -> ChargeResponse:
     """
     Create a charge (deduct credits from account).
@@ -193,7 +222,7 @@ async def create_charge(
     except AccountNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
+            detail=_ERR_ACCOUNT_NOT_FOUND,
         ) from exc
 
     except InsufficientCreditsError as exc:
@@ -236,7 +265,7 @@ async def create_charge(
 async def add_credits(
     request: AddCreditsRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:write")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
 ) -> CreditResponse:
     """
     Add credits to account (top-up, purchase, grant).
@@ -292,7 +321,7 @@ async def add_credits(
     except AccountNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
+            detail=_ERR_ACCOUNT_NOT_FOUND,
         ) from exc
 
     except IdempotencyConflictError as exc:
@@ -323,7 +352,7 @@ async def add_credits(
 async def create_purchase(
     request: PurchaseRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:write")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
 ) -> PurchaseResponse:
     """
     Create a payment intent for purchasing additional uses.
@@ -426,7 +455,7 @@ async def create_purchase(
 async def get_purchase_status(
     payment_id: str,
     db: AsyncSession = Depends(get_read_db),
-    api_key: APIKeyData = Depends(require_permission("billing:read")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_READ)),
 ) -> PurchaseResponse:
     """
     Get status of a payment intent.
@@ -482,7 +511,7 @@ async def get_purchase_status(
 async def get_purchase_status_alias(
     payment_id: str,
     db: AsyncSession = Depends(get_read_db),
-    api_key: APIKeyData = Depends(require_permission("billing:read")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_READ)),
 ) -> PurchaseResponse:
     """
     Get status of a payment intent (alias endpoint for agent compatibility).
@@ -504,7 +533,7 @@ async def get_purchase_status_alias(
 async def create_or_update_account(
     request: CreateAccountRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:write")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
 ) -> AccountResponse:
     """
     Create new account or get existing one (upsert).
@@ -573,7 +602,7 @@ async def get_account(
     wa_id: str | None = None,
     tenant_id: str | None = None,
     db: AsyncSession = Depends(get_read_db),
-    api_key: APIKeyData = Depends(require_permission("billing:read")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_READ)),
 ) -> AccountResponse:
     """
     Get account by identity.
@@ -617,7 +646,7 @@ async def get_account(
     except AccountNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
+            detail=_ERR_ACCOUNT_NOT_FOUND,
         ) from exc
 
 
@@ -789,10 +818,10 @@ async def verify_google_play_purchase(
     """
     # Check permission for API key auth (JWT auth is always allowed for own account)
     if auth.auth_type == "api_key" and auth.api_key:
-        if "billing:write" not in auth.api_key.permissions:
+        if _PERM_BILLING_WRITE not in auth.api_key.permissions:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Missing required permission: billing:write",
+                detail=f"Missing required permission: {_PERM_BILLING_WRITE}",
             )
     from sqlalchemy import select
     from structlog import get_logger
@@ -808,21 +837,14 @@ async def verify_google_play_purchase(
 
     service = BillingService(db)
 
-    # If JWT auth, use identity from token; otherwise use request body
-    if auth.auth_type == "jwt" and auth.user:
-        identity = AccountIdentity(
-            oauth_provider=auth.user.oauth_provider,
-            external_id=auth.user.external_id,
-            wa_id=request.wa_id if request else None,
-            tenant_id=request.tenant_id if request else None,
-        )
-    else:
-        identity = AccountIdentity(
-            oauth_provider=request.oauth_provider,
-            external_id=request.external_id,
-            wa_id=request.wa_id,
-            tenant_id=request.tenant_id,
-        )
+    # Resolve identity from auth context or request
+    identity = _resolve_identity_from_auth(
+        auth,
+        request.oauth_provider,
+        request.external_id,
+        request.wa_id,
+        request.tenant_id,
+    )
 
     # Check if purchase already processed (idempotency)
     existing_stmt = select(GooglePlayPurchase).where(
@@ -1078,7 +1100,7 @@ async def list_transactions(
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_read_db),
-    api_key: APIKeyData = Depends(require_permission("billing:read")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_READ)),
 ) -> TransactionListResponse:
     """
     List all transactions (charges and credits) for an account.
@@ -1213,7 +1235,7 @@ async def list_transactions(
 )
 async def litellm_log_usage_debug(
     request: Request,
-    api_key: APIKeyData = Depends(require_permission("billing:write")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
 ) -> dict[str, Any]:
     """Debug endpoint to capture raw request body."""
     from structlog import get_logger
@@ -1239,7 +1261,7 @@ async def litellm_log_usage_debug(
 async def litellm_log_usage(
     request: LiteLLMUsageLogRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission("billing:write")),
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
 ) -> LiteLLMUsageLogResponse:
     """
     Log LLM usage for analytics.
@@ -1278,7 +1300,7 @@ async def litellm_log_usage(
     if not account:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
+            detail=_ERR_ACCOUNT_NOT_FOUND,
         )
 
     # Create usage log
@@ -1604,7 +1626,7 @@ async def get_integrity_nonce(
 
     # Initialize service (doesn't require service account for nonce generation)
     config = PlayIntegrityConfig(
-        package_name=settings.ANDROID_PACKAGE_NAME or "ai.ciris.agent",
+        package_name=settings.ANDROID_PACKAGE_NAME or _DEFAULT_PACKAGE_NAME,
     )
     service = PlayIntegrityService(config)
 
@@ -1650,7 +1672,7 @@ async def verify_integrity(
         )
 
     config = PlayIntegrityConfig(
-        package_name=settings.ANDROID_PACKAGE_NAME or "ai.ciris.agent",
+        package_name=settings.ANDROID_PACKAGE_NAME or _DEFAULT_PACKAGE_NAME,
         service_account_json=settings.PLAY_INTEGRITY_SERVICE_ACCOUNT,
     )
     service = PlayIntegrityService(config)
@@ -1720,7 +1742,7 @@ async def verify_integrity_with_auth(
 
     # Verify Play Integrity
     config = PlayIntegrityConfig(
-        package_name=settings.ANDROID_PACKAGE_NAME or "ai.ciris.agent",
+        package_name=settings.ANDROID_PACKAGE_NAME or _DEFAULT_PACKAGE_NAME,
         service_account_json=settings.PLAY_INTEGRITY_SERVICE_ACCOUNT,
     )
     service = PlayIntegrityService(config)

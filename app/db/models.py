@@ -35,6 +35,10 @@ class Base(DeclarativeBase):
     pass
 
 
+# ForeignKey reference constant (avoid duplication)
+_FK_ACCOUNTS_ID = "accounts.id"
+
+
 def utc_now() -> datetime:
     """Get current UTC timestamp."""
     return datetime.now(UTC)
@@ -562,7 +566,7 @@ class GooglePlayPurchase(Base):
     # Foreign Key to Account
     account_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("accounts.id", ondelete="CASCADE"),
+        ForeignKey(_FK_ACCOUNTS_ID, ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -624,7 +628,7 @@ class LLMUsageLog(Base):
     # Foreign Key to Account
     account_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("accounts.id", ondelete="CASCADE"),
+        ForeignKey(_FK_ACCOUNTS_ID, ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -682,7 +686,7 @@ class ProductInventory(Base):
     # Foreign Key to Account
     account_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("accounts.id", ondelete="CASCADE"),
+        ForeignKey(_FK_ACCOUNTS_ID, ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -744,7 +748,7 @@ class ProductUsageLog(Base):
     # Foreign Key to Account
     account_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("accounts.id", ondelete="CASCADE"),
+        ForeignKey(_FK_ACCOUNTS_ID, ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

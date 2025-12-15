@@ -56,6 +56,53 @@ def _should_reset_daily_uses(reset_at: datetime | None) -> bool:
     return _utc_now() >= reset_at
 
 
+def _build_suspended_response(account: "Account") -> CreditCheckResponse:
+    """Build response for suspended account."""
+    return CreditCheckResponse(
+        has_credit=False,
+        credits_remaining=account.paid_credits,
+        plan_name=account.plan_name,
+        reason="Account suspended",
+        free_uses_remaining=account.free_uses_remaining,
+        total_uses=account.total_uses,
+        daily_free_uses_remaining=0,
+        daily_free_uses_limit=account.daily_free_uses_limit,
+    )
+
+
+def _build_closed_response(account: "Account") -> CreditCheckResponse:
+    """Build response for closed account."""
+    return CreditCheckResponse(
+        has_credit=False,
+        credits_remaining=account.paid_credits,
+        plan_name=account.plan_name,
+        reason="Account closed",
+        free_uses_remaining=account.free_uses_remaining,
+        total_uses=account.total_uses,
+        daily_free_uses_remaining=0,
+        daily_free_uses_limit=account.daily_free_uses_limit,
+    )
+
+
+def _validate_charge_account(account: "Account | None", intent: "ChargeIntent") -> "Account":
+    """Validate account for charge operation. Returns account or raises."""
+    if account is None:
+        raise AccountNotFoundError(intent.account_identity)
+
+    if account.status == AccountStatus.SUSPENDED:
+        raise AccountSuspendedError(account.id, "Account suspended")
+
+    if account.status == AccountStatus.CLOSED:
+        raise AccountClosedError(account.id)
+
+    if account.currency != intent.currency:
+        raise DataIntegrityError(
+            f"Currency mismatch: account={account.currency}, charge={intent.currency}"
+        )
+
+    return account
+
+
 class BillingService:
     """
     Billing service with write verification.
@@ -139,31 +186,12 @@ class BillingService:
         # Log credit check for auditing
         await self._log_credit_check(identity, context, account)
 
-        # Account suspended
+        # Check account status - early exit for suspended/closed
         if account.status == AccountStatus.SUSPENDED:
-            return CreditCheckResponse(
-                has_credit=False,
-                credits_remaining=account.paid_credits,
-                plan_name=account.plan_name,
-                reason="Account suspended",
-                free_uses_remaining=account.free_uses_remaining,
-                total_uses=account.total_uses,
-                daily_free_uses_remaining=0,
-                daily_free_uses_limit=account.daily_free_uses_limit,
-            )
+            return _build_suspended_response(account)
 
-        # Account closed
         if account.status == AccountStatus.CLOSED:
-            return CreditCheckResponse(
-                has_credit=False,
-                credits_remaining=account.paid_credits,
-                plan_name=account.plan_name,
-                reason="Account closed",
-                free_uses_remaining=account.free_uses_remaining,
-                total_uses=account.total_uses,
-                daily_free_uses_remaining=0,
-                daily_free_uses_limit=account.daily_free_uses_limit,
-            )
+            return _build_closed_response(account)
 
         # Reset daily uses if needed
         daily_free_uses = account.daily_free_uses_remaining
@@ -221,24 +249,9 @@ class BillingService:
             if existing_charge:
                 raise IdempotencyConflictError(existing_charge.id)
 
-        # Lock account row for update
-        account = await self._lock_account_for_update(intent.account_identity)
-
-        if account is None:
-            raise AccountNotFoundError(intent.account_identity)
-
-        # Verify account status
-        if account.status == AccountStatus.SUSPENDED:
-            raise AccountSuspendedError(account.id, "Account suspended")
-
-        if account.status == AccountStatus.CLOSED:
-            raise AccountClosedError(account.id)
-
-        # Verify currency matches
-        if account.currency != intent.currency:
-            raise DataIntegrityError(
-                f"Currency mismatch: account={account.currency}, charge={intent.currency}"
-            )
+        # Lock account row for update and validate
+        raw_account = await self._lock_account_for_update(intent.account_identity)
+        account = _validate_charge_account(raw_account, intent)
 
         # Reset daily uses if needed (before checking availability)
         if _should_reset_daily_uses(account.daily_free_uses_reset_at):
@@ -285,7 +298,18 @@ class BillingService:
         )
 
         self.session.add(charge)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as e:
+            # Race condition: another request inserted with same idempotency key
+            # Handle gracefully by returning the existing charge (true idempotency)
+            if intent.idempotency_key and "uq_charge_idempotency" in str(e):
+                await self.session.rollback()
+                existing = await self._find_charge_by_idempotency(intent.idempotency_key)
+                if existing:
+                    return self._charge_to_domain(existing)
+            # Re-raise if it's a different constraint or no idempotency key
+            raise
 
         # Verify charge was written
         verified_charge = await self.session.get(Charge, charge.id)
@@ -390,7 +414,18 @@ class BillingService:
         )
 
         self.session.add(credit)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as e:
+            # Race condition: another request inserted with same idempotency key
+            # Handle gracefully by returning the existing credit (true idempotency)
+            if intent.idempotency_key and "uq_credit_idempotency" in str(e):
+                await self.session.rollback()
+                existing = await self._find_credit_by_idempotency(intent.idempotency_key)
+                if existing:
+                    return self._credit_to_domain(existing)
+            # Re-raise if it's a different constraint or no idempotency key
+            raise
 
         # Verify credit was written
         verified_credit = await self.session.get(Credit, credit.id)
@@ -541,34 +576,19 @@ class BillingService:
 
         updated = False
 
+        # Update each field if provided and changed
         if customer_email is not None and account.customer_email != customer_email:
-            logger.info(
-                "update_account_metadata_email_update",
-                old_email=account.customer_email,
-                new_email=customer_email,
-            )
             account.customer_email = customer_email
             updated = True
-        elif customer_email is not None:
-            logger.debug(
-                "update_account_metadata_email_unchanged",
-                email=customer_email,
-            )
 
         if display_name is not None and account.display_name != display_name:
-            logger.info(
-                "update_account_metadata_name_update",
-                old_name=account.display_name,
-                new_name=display_name,
-            )
             account.display_name = display_name
             updated = True
 
         if marketing_opt_in is not None and account.marketing_opt_in != marketing_opt_in:
             account.marketing_opt_in = marketing_opt_in
             account.marketing_opt_in_at = _utc_now() if marketing_opt_in else None
-            if marketing_opt_in_source is not None:
-                account.marketing_opt_in_source = marketing_opt_in_source
+            account.marketing_opt_in_source = marketing_opt_in_source  # May be None
             updated = True
 
         if user_role is not None and account.user_role != user_role:
@@ -699,6 +719,14 @@ class BillingService:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    def _get_denial_reason(self, account: Account | None) -> str | None:
+        """Get denial reason for credit check logging."""
+        if account is None:
+            return "Account not found"
+        if account.paid_credits > 0:
+            return None
+        return "Insufficient credits"
+
     async def _log_credit_check(
         self,
         identity: AccountIdentity,
@@ -715,11 +743,7 @@ class BillingService:
             has_credit=account.paid_credits > 0 if account else False,
             credits_remaining=account.paid_credits if account else None,
             plan_name=account.plan_name if account else None,
-            denial_reason=(
-                None
-                if account and account.paid_credits > 0
-                else ("Insufficient credits" if account else "Account not found")
-            ),
+            denial_reason=self._get_denial_reason(account),
             context_agent_id=context.agent_id if context else None,
             context_channel_id=context.channel_id if context else None,
             context_request_id=context.request_id if context else None,
@@ -757,4 +781,38 @@ class BillingService:
             daily_free_uses_remaining=daily_free_uses,
             daily_free_uses_limit=account.daily_free_uses_limit,
             daily_free_uses_reset_at=daily_reset_at,
+        )
+
+    def _charge_to_domain(self, charge: Charge) -> ChargeData:
+        """Convert ORM charge to domain model."""
+        return ChargeData(
+            charge_id=charge.id,
+            account_id=charge.account_id,
+            amount_minor=charge.amount_minor,
+            currency=charge.currency,
+            balance_before=charge.balance_before,
+            balance_after=charge.balance_after,
+            description=charge.description,
+            metadata=ChargeMetadata(
+                message_id=charge.metadata_message_id,
+                agent_id=charge.metadata_agent_id,
+                channel_id=charge.metadata_channel_id,
+                request_id=charge.metadata_request_id,
+            ),
+            created_at=charge.created_at,
+        )
+
+    def _credit_to_domain(self, credit: Credit) -> CreditData:
+        """Convert ORM credit to domain model."""
+        return CreditData(
+            credit_id=credit.id,
+            account_id=credit.account_id,
+            amount_minor=credit.amount_minor,
+            currency=credit.currency,
+            balance_before=credit.balance_before,
+            balance_after=credit.balance_after,
+            transaction_type=credit.transaction_type,
+            description=credit.description,
+            external_transaction_id=credit.external_transaction_id,
+            created_at=credit.created_at,
         )

@@ -23,6 +23,12 @@ from app.services.token_revocation import token_revocation_service
 logger = get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# Query parameter description constants (avoid duplication)
+_DESC_PAGE_NUMBER = "Page number"
+_DESC_ITEMS_PER_PAGE = "Items per page"
+_DESC_DAYS_TO_RETRIEVE = "Number of days to retrieve"
+_DESC_DAYS_TO_ANALYZE = "Number of days to analyze"
+
 
 # ============================================================================
 # Request/Response Models
@@ -329,8 +335,8 @@ class MarginOverviewResponse(BaseModel):
 
 @router.get("/users", response_model=UserListResponse)
 async def list_users(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
+    page: int = Query(1, ge=1, description=_DESC_PAGE_NUMBER),
+    page_size: int = Query(50, ge=1, le=500, description=_DESC_ITEMS_PER_PAGE),
     status_filter: str | None = Query(None, description="Filter by status"),
     search: str | None = Query(None, description="Search by email or external_id"),
     db: AsyncSession = Depends(get_read_db),
@@ -907,7 +913,7 @@ async def get_analytics_overview(
 
 @router.get("/analytics/daily", response_model=list[DailyAnalyticsResponse])
 async def get_daily_analytics(
-    days: int = Query(30, ge=1, le=365, description="Number of days to retrieve"),
+    days: int = Query(30, ge=1, le=365, description=_DESC_DAYS_TO_RETRIEVE),
     db: AsyncSession = Depends(get_read_db),
     admin: AdminUser = Depends(get_current_admin),
 ) -> list[DailyAnalyticsResponse]:
@@ -1073,7 +1079,7 @@ REVENUE_PER_INTERACTION_CENTS = 100
 
 @router.get("/analytics/margin/overview", response_model=MarginOverviewResponse)
 async def get_margin_overview(
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    days: int = Query(30, ge=1, le=365, description=_DESC_DAYS_TO_ANALYZE),
     db: AsyncSession = Depends(get_read_db),
     admin: AdminUser = Depends(get_current_admin),
 ) -> MarginOverviewResponse:
@@ -1170,7 +1176,7 @@ async def get_margin_overview(
 
 @router.get("/analytics/margin/daily", response_model=list[DailyMarginResponse])
 async def get_daily_margin(
-    days: int = Query(30, ge=1, le=365, description="Number of days to retrieve"),
+    days: int = Query(30, ge=1, le=365, description=_DESC_DAYS_TO_RETRIEVE),
     db: AsyncSession = Depends(get_read_db),
     admin: AdminUser = Depends(get_current_admin),
 ) -> list[DailyMarginResponse]:
@@ -1241,9 +1247,9 @@ async def get_daily_margin(
 
 @router.get("/analytics/margin/users", response_model=UserMarginListResponse)
 async def get_user_margins(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    page: int = Query(1, ge=1, description=_DESC_PAGE_NUMBER),
+    page_size: int = Query(50, ge=1, le=500, description=_DESC_ITEMS_PER_PAGE),
+    days: int = Query(30, ge=1, le=365, description=_DESC_DAYS_TO_ANALYZE),
     sort_by: str = Query(
         "margin_cents",
         pattern="^(margin_cents|total_revenue_cents|total_llm_cost_cents|total_interactions)$",
@@ -1397,10 +1403,10 @@ async def get_user_margins(
 
 @router.get("/analytics/margin/interactions", response_model=InteractionMarginListResponse)
 async def get_interaction_margins(
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
+    page: int = Query(1, ge=1, description=_DESC_PAGE_NUMBER),
+    page_size: int = Query(50, ge=1, le=500, description=_DESC_ITEMS_PER_PAGE),
     account_id: UUID | None = Query(None, description="Filter by account ID"),
-    days: int = Query(7, ge=1, le=90, description="Number of days to retrieve"),
+    days: int = Query(7, ge=1, le=90, description=_DESC_DAYS_TO_RETRIEVE),
     db: AsyncSession = Depends(get_read_db),
     admin: AdminUser = Depends(get_current_admin),
 ) -> InteractionMarginListResponse:
@@ -1502,7 +1508,7 @@ async def get_interaction_margins(
 @router.get("/analytics/margin/users/{account_id}", response_model=UserMarginResponse)
 async def get_user_margin_detail(
     account_id: UUID,
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    days: int = Query(30, ge=1, le=365, description=_DESC_DAYS_TO_ANALYZE),
     db: AsyncSession = Depends(get_read_db),
     admin: AdminUser = Depends(get_current_admin),
 ) -> UserMarginResponse:
