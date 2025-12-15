@@ -6,6 +6,7 @@ NO DICTIONARIES - All dependencies return typed objects.
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import NoReturn
 
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -79,7 +80,7 @@ def _get_cached_user(token: str) -> UserIdentity | None:
     return None
 
 
-def _raise_auth_error(detail: str) -> None:
+def _raise_auth_error(detail: str) -> NoReturn:
     """Raise a 401 HTTPException with WWW-Authenticate header. Always raises."""
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -389,7 +390,7 @@ def require_permission_or_jwt(
     - If JWT auth: always allowed (user is authenticated)
     """
 
-    def auth_checker(
+    async def auth_checker(
         auth: CombinedAuth = Depends(get_api_key_or_jwt),
     ) -> CombinedAuth:
         """Check permission for API key auth, pass through for JWT."""
