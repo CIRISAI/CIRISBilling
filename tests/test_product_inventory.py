@@ -55,14 +55,16 @@ class TestProductBalance:
             product_type="web_search",
             free_remaining=5,
             paid_credits=10,
-            total_available=15,
+            main_pool_credits=100,
+            total_available=115,
             price_minor=100,
             total_uses=50,
         )
         assert balance.product_type == "web_search"
         assert balance.free_remaining == 5
         assert balance.paid_credits == 10
-        assert balance.total_available == 15
+        assert balance.main_pool_credits == 100
+        assert balance.total_available == 115
         assert balance.price_minor == 100
         assert balance.total_uses == 50
 
@@ -122,6 +124,8 @@ class TestProductInventoryService:
         account.wa_id = None
         account.tenant_id = None
         account.status = "active"
+        account.paid_credits = 0  # Main credit pool
+        account.balance_minor = 0
         return account
 
     @pytest.fixture
@@ -330,8 +334,14 @@ class TestProductInventoryService:
         assert balance.product_type == "web_search"
         assert balance.free_remaining == mock_inventory.free_remaining
         assert balance.paid_credits == mock_inventory.paid_credits
+        # Total includes free + paid + main_pool_credits
+        # main_pool_credits = mock_account.paid_credits // price_minor (0 // 1 = 0)
+        assert balance.main_pool_credits == 0
         assert (
-            balance.total_available == mock_inventory.free_remaining + mock_inventory.paid_credits
+            balance.total_available
+            == mock_inventory.free_remaining
+            + mock_inventory.paid_credits
+            + balance.main_pool_credits
         )
 
     @pytest.mark.asyncio
@@ -531,6 +541,72 @@ class TestProductInventoryService:
 
         assert mock_inventory.total_uses == 51
         assert result.total_uses == 51
+
+    @pytest.mark.asyncio
+    async def test_charge_uses_main_pool_when_tool_credits_exhausted(
+        self, db_session, test_identity, mock_account, mock_inventory
+    ):
+        """charge uses main account pool when free and tool paid credits are exhausted."""
+        account_result = MagicMock()
+        account_result.scalar_one_or_none.return_value = mock_account
+        # Account has main pool credits (568 cents = 568 tool uses at 1 cent each)
+        mock_account.paid_credits = 568
+        mock_account.balance_minor = 568
+
+        inventory_result = MagicMock()
+        inventory_result.scalar_one_or_none.return_value = mock_inventory
+        # No free or tool-specific paid credits
+        mock_inventory.free_remaining = 0
+        mock_inventory.paid_credits = 0
+        mock_inventory.last_daily_refresh = datetime.now(UTC)
+        mock_inventory.total_uses = 50
+
+        idempotency_result = MagicMock()
+        idempotency_result.scalar_one_or_none.return_value = None
+
+        db_session.execute.side_effect = [
+            account_result,
+            inventory_result,
+            idempotency_result,
+        ]
+
+        service = ProductInventoryService(db_session)
+        result = await service.charge(test_identity, "web_search")
+
+        # Should succeed by using main pool
+        assert result.success is True
+        assert result.used_paid is True
+        # Main pool should be decremented by price_minor (1 cent)
+        assert mock_account.paid_credits == 567
+        assert mock_account.balance_minor == 567
+        # Cost should be the price_minor
+        assert result.cost_minor == 1
+
+    @pytest.mark.asyncio
+    async def test_get_balance_includes_main_pool_credits(
+        self, db_session, test_identity, mock_account, mock_inventory
+    ):
+        """get_balance includes main pool credits in total_available."""
+        account_result = MagicMock()
+        account_result.scalar_one_or_none.return_value = mock_account
+        # Account has 100 main pool credits
+        mock_account.paid_credits = 100
+
+        inventory_result = MagicMock()
+        inventory_result.scalar_one_or_none.return_value = mock_inventory
+        mock_inventory.free_remaining = 5
+        mock_inventory.paid_credits = 10
+        mock_inventory.last_daily_refresh = datetime.now(UTC)
+
+        db_session.execute.side_effect = [account_result, inventory_result]
+
+        service = ProductInventoryService(db_session)
+        balance = await service.get_balance(test_identity, "web_search")
+
+        # main_pool_credits = 100 // 1 = 100 tool uses
+        assert balance.main_pool_credits == 100
+        # total = 5 free + 10 paid + 100 main pool = 115
+        assert balance.total_available == 115
 
     @pytest.mark.asyncio
     async def test_add_credits_increases_paid_credits(

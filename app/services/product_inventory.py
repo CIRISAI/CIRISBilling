@@ -54,7 +54,8 @@ class ProductBalance:
     product_type: str
     free_remaining: int
     paid_credits: int
-    total_available: int
+    main_pool_credits: int  # Credits from main account pool (fallback)
+    total_available: int  # free + paid + main_pool
     price_minor: int
     total_uses: int
 
@@ -232,7 +233,10 @@ class ProductInventoryService:
         return True
 
     async def get_balance(self, identity: AccountIdentity, product_type: str) -> ProductBalance:
-        """Get current balance for a product. Auto-creates account if needed."""
+        """Get current balance for a product. Auto-creates account if needed.
+
+        Includes main account pool credits as fallback when tool-specific credits are exhausted.
+        """
         account = await self._get_or_create_account(identity)
 
         inventory = await self.get_or_create_inventory(account.id, product_type)
@@ -242,17 +246,24 @@ class ProductInventoryService:
 
         config = PRODUCT_CONFIGS[product_type]
 
+        # Calculate total including main pool fallback
+        # Main pool credits are available as fallback (converted to tool uses)
+        main_pool_tool_credits = account.paid_credits // config.price_minor
+
         return ProductBalance(
             product_type=product_type,
             free_remaining=inventory.free_remaining,
             paid_credits=inventory.paid_credits,
-            total_available=inventory.free_remaining + inventory.paid_credits,
+            main_pool_credits=main_pool_tool_credits,
+            total_available=inventory.free_remaining
+            + inventory.paid_credits
+            + main_pool_tool_credits,
             price_minor=config.price_minor,
             total_uses=inventory.total_uses,
         )
 
     async def check_credit(self, identity: AccountIdentity, product_type: str) -> bool:
-        """Check if user has any credit (free or paid) for a product."""
+        """Check if user has any credit (free, tool-paid, or main pool) for a product."""
         try:
             balance = await self.get_balance(identity, product_type)
             return balance.total_available > 0
@@ -269,7 +280,8 @@ class ProductInventoryService:
         """
         Charge one unit of a product.
 
-        Uses free credits first, then paid credits.
+        Uses free credits first, then tool-specific paid credits,
+        then falls back to main account credit pool.
         Auto-creates account and inventory with initial free credits if needed.
         Raises InsufficientCreditsError if no credits available.
         """
@@ -311,10 +323,12 @@ class ProductInventoryService:
         # Snapshot before
         free_before = inventory.free_remaining
         paid_before = inventory.paid_credits
+        main_pool_before = account.paid_credits
 
-        # Determine credit source
+        # Determine credit source (priority: free -> tool paid -> main pool)
         used_free = False
         used_paid = False
+        used_main_pool = False
         cost_minor = 0
 
         if inventory.free_remaining > 0:
@@ -323,15 +337,33 @@ class ProductInventoryService:
             used_free = True
             cost_minor = 0
         elif inventory.paid_credits > 0:
-            # Use paid credit
+            # Use tool-specific paid credit
             inventory.paid_credits -= 1
             used_paid = True
             cost_minor = config.price_minor
+        elif account.paid_credits >= config.price_minor:
+            # Fall back to main account credit pool
+            account.paid_credits -= config.price_minor
+            account.balance_minor = account.paid_credits  # Keep in sync
+            used_paid = True
+            used_main_pool = True
+            cost_minor = config.price_minor
+            logger.info(
+                "product_charge_using_main_pool",
+                account_id=str(account.id),
+                product_type=product_type,
+                main_pool_before=main_pool_before,
+                main_pool_after=account.paid_credits,
+                cost_minor=cost_minor,
+            )
         else:
-            # No credits available
+            # No credits available anywhere
+            total_available = (
+                inventory.free_remaining + inventory.paid_credits + account.paid_credits
+            )
             raise InsufficientCreditsError(
-                balance=inventory.free_remaining + inventory.paid_credits,
-                required=1,
+                balance=total_available,
+                required=config.price_minor,
             )
 
         # Increment usage counter
@@ -362,9 +394,11 @@ class ProductInventoryService:
             product_type=product_type,
             used_free=used_free,
             used_paid=used_paid,
+            used_main_pool=used_main_pool,
             cost_minor=cost_minor,
             free_remaining=inventory.free_remaining,
             paid_credits=inventory.paid_credits,
+            main_pool_credits=account.paid_credits,
             total_uses=inventory.total_uses,
         )
 
@@ -408,12 +442,16 @@ class ProductInventoryService:
         )
 
         config = PRODUCT_CONFIGS[product_type]
+        main_pool_tool_credits = account.paid_credits // config.price_minor
 
         return ProductBalance(
             product_type=product_type,
             free_remaining=inventory.free_remaining,
             paid_credits=inventory.paid_credits,
-            total_available=inventory.free_remaining + inventory.paid_credits,
+            main_pool_credits=main_pool_tool_credits,
+            total_available=inventory.free_remaining
+            + inventory.paid_credits
+            + main_pool_tool_credits,
             price_minor=config.price_minor,
             total_uses=inventory.total_uses,
         )
@@ -427,13 +465,17 @@ class ProductInventoryService:
             inventory = await self.get_or_create_inventory(account.id, product_type)
             self._refresh_daily_credits(inventory)
             config = PRODUCT_CONFIGS[product_type]
+            main_pool_tool_credits = account.paid_credits // config.price_minor
 
             balances.append(
                 ProductBalance(
                     product_type=product_type,
                     free_remaining=inventory.free_remaining,
                     paid_credits=inventory.paid_credits,
-                    total_available=inventory.free_remaining + inventory.paid_credits,
+                    main_pool_credits=main_pool_tool_credits,
+                    total_available=inventory.free_remaining
+                    + inventory.paid_credits
+                    + main_pool_tool_credits,
                     price_minor=config.price_minor,
                     total_uses=inventory.total_uses,
                 )

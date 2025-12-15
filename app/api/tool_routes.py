@@ -32,8 +32,11 @@ class ToolBalanceResponse(BaseModel):
 
     product_type: str = Field(..., description="Product type (e.g., 'web_search')")
     free_remaining: int = Field(..., description="Free credits remaining")
-    paid_credits: int = Field(..., description="Paid credits available")
-    total_available: int = Field(..., description="Total credits (free + paid)")
+    paid_credits: int = Field(..., description="Tool-specific paid credits available")
+    main_pool_credits: int = Field(
+        default=0, description="Credits available from main account pool (fallback)"
+    )
+    total_available: int = Field(..., description="Total credits (free + paid + main_pool)")
     price_minor: int = Field(..., description="Price per use in cents")
     total_uses: int = Field(..., description="Lifetime usage count")
 
@@ -71,7 +74,10 @@ class ToolCheckResponse(BaseModel):
     has_credit: bool = Field(..., description="Whether user has any credit")
     product_type: str = Field(..., description="Product type checked")
     free_remaining: int = Field(..., description="Free credits remaining")
-    paid_credits: int = Field(..., description="Paid credits available")
+    paid_credits: int = Field(..., description="Tool-specific paid credits available")
+    main_pool_credits: int = Field(
+        default=0, description="Credits available from main account pool (fallback)"
+    )
     total_available: int = Field(..., description="Total credits available")
 
 
@@ -111,6 +117,7 @@ async def get_tool_balance(
         product_type=balance.product_type,
         free_remaining=balance.free_remaining,
         paid_credits=balance.paid_credits,
+        main_pool_credits=balance.main_pool_credits,
         total_available=balance.total_available,
         price_minor=balance.price_minor,
         total_uses=balance.total_uses,
@@ -143,6 +150,7 @@ async def get_all_tool_balances(
                 product_type=b.product_type,
                 free_remaining=b.free_remaining,
                 paid_credits=b.paid_credits,
+                main_pool_credits=b.main_pool_credits,
                 total_available=b.total_available,
                 price_minor=b.price_minor,
                 total_uses=b.total_uses,
@@ -190,6 +198,7 @@ async def check_tool_credit(
             product_type=product_type,
             free_remaining=config.free_initial,
             paid_credits=0,
+            main_pool_credits=0,  # Unknown for new account
             total_available=config.free_initial,
         )
 
@@ -198,6 +207,7 @@ async def check_tool_credit(
         product_type=product_type,
         free_remaining=balance.free_remaining,
         paid_credits=balance.paid_credits,
+        main_pool_credits=balance.main_pool_credits,
         total_available=balance.total_available,
     )
 
