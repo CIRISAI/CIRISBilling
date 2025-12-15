@@ -2,6 +2,7 @@
 Status API routes - Health checks for CIRISBilling dependencies.
 
 Public endpoint (no auth) for status page aggregation by CIRISLens.
+Rate limited to prevent abuse.
 """
 
 import asyncio
@@ -24,6 +25,10 @@ router = APIRouter(tags=["status"])
 # Timeout for health checks
 CHECK_TIMEOUT = 5.0  # seconds
 DEGRADED_LATENCY_THRESHOLD = 1000  # ms
+
+# Rate limiting: cache last result for 10 seconds
+_status_cache: dict[str, tuple[datetime, "ServiceStatusResponse"]] = {}
+_CACHE_TTL_SECONDS = 10
 
 
 class StatusLevel(str, Enum):
@@ -217,7 +222,22 @@ async def get_status() -> ServiceStatusResponse:
 
     Public endpoint (no auth) for status page aggregation.
     Checks connectivity to all dependent providers.
+
+    Rate limited via 10-second cache to prevent abuse.
     """
+    global _status_cache
+
+    # Check cache to prevent DoS via repeated requests
+    cache_key = "status"
+    now = datetime.now(UTC)
+
+    if cache_key in _status_cache:
+        cached_time, cached_response = _status_cache[cache_key]
+        age_seconds = (now - cached_time).total_seconds()
+        if age_seconds < _CACHE_TTL_SECONDS:
+            logger.debug("status_cache_hit", age_seconds=age_seconds)
+            return cached_response
+
     # Run all checks concurrently
     postgresql_task = asyncio.create_task(check_postgresql())
     google_oauth_task = asyncio.create_task(check_google_oauth())
@@ -235,10 +255,15 @@ async def get_status() -> ServiceStatusResponse:
 
     overall_status = calculate_overall_status(providers)
 
-    return ServiceStatusResponse(
+    response = ServiceStatusResponse(
         service="cirisbilling",
         status=overall_status,
-        timestamp=datetime.now(UTC).isoformat(),
+        timestamp=now.isoformat(),
         version=settings.api_version,
         providers=providers,
     )
+
+    # Cache the response
+    _status_cache[cache_key] = (now, response)
+
+    return response

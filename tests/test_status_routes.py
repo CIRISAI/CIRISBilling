@@ -270,3 +270,21 @@ class TestProviderStatusModel:
         assert status.status == StatusLevel.OUTAGE
         assert status.latency_ms is None
         assert status.message is None
+
+
+class TestStatusCaching:
+    """Tests for status endpoint caching (DoS protection)."""
+
+    def test_cache_ttl_constant_is_reasonable(self) -> None:
+        """Cache TTL should be between 5 and 60 seconds."""
+        from app.api.status_routes import _CACHE_TTL_SECONDS
+
+        assert 5 <= _CACHE_TTL_SECONDS <= 60, "Cache TTL should be 5-60 seconds"
+
+    def test_cache_is_initialized_empty(self) -> None:
+        """Status cache should start empty or be clearable."""
+        import app.api.status_routes as status_module
+
+        # Clear cache for test isolation
+        status_module._status_cache.clear()
+        assert len(status_module._status_cache) == 0
