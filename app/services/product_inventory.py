@@ -205,7 +205,7 @@ class ProductInventoryService:
         # Refresh if it's a new day (UTC)
         return now.date() > last_refresh.date()
 
-    async def _refresh_daily_credits(self, inventory: ProductInventory) -> bool:
+    def _refresh_daily_credits(self, inventory: ProductInventory) -> bool:
         """Refresh daily free credits if needed. Returns True if refreshed."""
         if not self._should_refresh_daily(inventory):
             return False
@@ -238,7 +238,7 @@ class ProductInventoryService:
         inventory = await self.get_or_create_inventory(account.id, product_type)
 
         # Check for daily refresh
-        await self._refresh_daily_credits(inventory)
+        self._refresh_daily_credits(inventory)
 
         config = PRODUCT_CONFIGS[product_type]
 
@@ -306,7 +306,7 @@ class ProductInventoryService:
                 )
 
         # Check for daily refresh
-        await self._refresh_daily_credits(inventory)
+        self._refresh_daily_credits(inventory)
 
         # Snapshot before
         free_before = inventory.free_remaining
@@ -425,7 +425,7 @@ class ProductInventoryService:
         balances = []
         for product_type in PRODUCT_CONFIGS:
             inventory = await self.get_or_create_inventory(account.id, product_type)
-            await self._refresh_daily_credits(inventory)
+            self._refresh_daily_credits(inventory)
             config = PRODUCT_CONFIGS[product_type]
 
             balances.append(

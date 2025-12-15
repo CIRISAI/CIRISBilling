@@ -26,6 +26,10 @@ router = APIRouter(tags=["status"])
 CHECK_TIMEOUT = 5.0  # seconds
 DEGRADED_LATENCY_THRESHOLD = 1000  # ms
 
+# Status messages
+_MSG_HIGH_LATENCY = "High latency"
+_MSG_CONNECTION_FAILED = "Connection failed"
+
 # Rate limiting: cache last result for 10 seconds
 _status_cache: dict[str, tuple[datetime, "ServiceStatusResponse"]] = {}
 _CACHE_TTL_SECONDS = 10
@@ -78,7 +82,7 @@ async def check_postgresql() -> ProviderStatus:
                 status=status,
                 latency_ms=latency_ms,
                 last_check=timestamp,
-                message="High latency" if status == StatusLevel.DEGRADED else None,
+                message=_MSG_HIGH_LATENCY if status == StatusLevel.DEGRADED else None,
             )
     except Exception as e:
         logger.warning("postgresql_health_check_failed", error=str(e))
@@ -86,7 +90,7 @@ async def check_postgresql() -> ProviderStatus:
             status=StatusLevel.OUTAGE,
             latency_ms=None,
             last_check=timestamp,
-            message="Connection failed",
+            message=_MSG_CONNECTION_FAILED,
         )
 
     # Fallback (shouldn't reach here)
@@ -120,7 +124,7 @@ async def check_google_oauth() -> ProviderStatus:
                     status=status,
                     latency_ms=latency_ms,
                     last_check=timestamp,
-                    message="High latency" if status == StatusLevel.DEGRADED else None,
+                    message=_MSG_HIGH_LATENCY if status == StatusLevel.DEGRADED else None,
                 )
 
             return ProviderStatus(
@@ -142,7 +146,7 @@ async def check_google_oauth() -> ProviderStatus:
             status=StatusLevel.OUTAGE,
             latency_ms=None,
             last_check=timestamp,
-            message="Connection failed",
+            message=_MSG_CONNECTION_FAILED,
         )
 
 
@@ -178,7 +182,7 @@ async def check_google_play() -> ProviderStatus:
                     status=status,
                     latency_ms=latency_ms,
                     last_check=timestamp,
-                    message="High latency" if status == StatusLevel.DEGRADED else None,
+                    message=_MSG_HIGH_LATENCY if status == StatusLevel.DEGRADED else None,
                 )
 
             return ProviderStatus(
@@ -200,7 +204,7 @@ async def check_google_play() -> ProviderStatus:
             status=StatusLevel.OUTAGE,
             latency_ms=None,
             last_check=timestamp,
-            message="Connection failed",
+            message=_MSG_CONNECTION_FAILED,
         )
 
 

@@ -118,7 +118,7 @@ class PlayIntegrityService:
         if nonce not in _nonce_cache:
             return False, "Nonce not found or already expired"
 
-        created_at, expires_at, context, used = _nonce_cache[nonce]
+        _, expires_at, _, used = _nonce_cache[nonce]
 
         if used:
             return False, "Nonce already used"
@@ -164,7 +164,7 @@ class PlayIntegrityService:
 
         # Step 2: Decode token via Google API
         try:
-            decoded = await self._decode_integrity_token(integrity_token)
+            decoded = self._decode_integrity_token(integrity_token)
         except Exception as e:
             logger.error("play_integrity_decode_failed", error=str(e))
             return IntegrityVerifyResponse(
@@ -179,7 +179,7 @@ class PlayIntegrityService:
         # Step 4: Validate the decoded token
         return self._process_decoded_token(decoded, nonce)
 
-    async def _decode_integrity_token(self, integrity_token: str) -> dict[str, Any]:
+    def _decode_integrity_token(self, integrity_token: str) -> dict[str, Any]:
         """
         Decode integrity token using Google Play Integrity API.
 
