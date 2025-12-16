@@ -4,6 +4,7 @@ Tests for Tool API Routes.
 Tests endpoints for tool credit management (web search, image gen, etc.)
 """
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -304,13 +305,20 @@ class TestToolChargeEndpoint:
     """Tests for tool charge endpoint."""
 
     @pytest.fixture
-    def mock_identity(self):
-        """Create mock account identity."""
-        return AccountIdentity(
-            oauth_provider="oauth:google",
-            external_id="user@example.com",
-            wa_id=None,
-            tenant_id=None,
+    def mock_api_key(self):
+        """Create mock API key data."""
+        from app.api.dependencies import APIKeyData
+
+        return APIKeyData(
+            key_id=uuid4(),
+            name="test-key",
+            key_prefix="cbk_test_",
+            environment="test",
+            permissions=["billing:read", "billing:write"],
+            status="active",
+            created_at=datetime.now(UTC),
+            expires_at=None,
+            last_used_at=None,
         )
 
     @pytest.fixture
@@ -328,7 +336,7 @@ class TestToolChargeEndpoint:
         )
 
     @pytest.mark.asyncio
-    async def test_charge_tool_usage_success(self, mock_identity, mock_charge_result):
+    async def test_charge_tool_usage_success(self, mock_api_key, mock_charge_result):
         """charge_tool_usage charges and returns result."""
         from app.api.tool_routes import ToolChargeRequest, charge_tool_usage
 
@@ -336,6 +344,8 @@ class TestToolChargeEndpoint:
 
         request = ToolChargeRequest(
             product_type="web_search",
+            oauth_provider="oauth:google",
+            external_id="user@example.com",
             idempotency_key="test-key-123",
             request_id="req-456",
         )
@@ -346,8 +356,8 @@ class TestToolChargeEndpoint:
 
             result = await charge_tool_usage(
                 request=request,
-                identity=mock_identity,
                 db=db,
+                api_key=mock_api_key,
             )
 
         assert result.success is True
@@ -358,7 +368,7 @@ class TestToolChargeEndpoint:
         assert result.has_credit is True
 
     @pytest.mark.asyncio
-    async def test_charge_tool_usage_paid_credits(self, mock_identity):
+    async def test_charge_tool_usage_paid_credits(self, mock_api_key):
         """charge_tool_usage uses paid credits when no free credits."""
         from app.api.tool_routes import ToolChargeRequest, charge_tool_usage
 
@@ -375,7 +385,11 @@ class TestToolChargeEndpoint:
             usage_log_id=uuid4(),
         )
 
-        request = ToolChargeRequest(product_type="web_search")
+        request = ToolChargeRequest(
+            product_type="web_search",
+            oauth_provider="oauth:google",
+            external_id="user@example.com",
+        )
 
         with patch("app.api.tool_routes.ProductInventoryService") as MockService:
             mock_service = MockService.return_value
@@ -383,15 +397,15 @@ class TestToolChargeEndpoint:
 
             result = await charge_tool_usage(
                 request=request,
-                identity=mock_identity,
                 db=db,
+                api_key=mock_api_key,
             )
 
         assert result.used_paid is True
         assert result.cost_minor == 100
 
     @pytest.mark.asyncio
-    async def test_charge_tool_usage_invalid_product(self, mock_identity):
+    async def test_charge_tool_usage_invalid_product(self, mock_api_key):
         """charge_tool_usage raises 400 for unknown product."""
         from fastapi import HTTPException
 
@@ -399,7 +413,11 @@ class TestToolChargeEndpoint:
 
         db = AsyncMock()
 
-        request = ToolChargeRequest(product_type="invalid")
+        request = ToolChargeRequest(
+            product_type="invalid",
+            oauth_provider="oauth:google",
+            external_id="user@example.com",
+        )
 
         with patch("app.api.tool_routes.ProductInventoryService") as MockService:
             mock_service = MockService.return_value
@@ -408,14 +426,14 @@ class TestToolChargeEndpoint:
             with pytest.raises(HTTPException) as exc_info:
                 await charge_tool_usage(
                     request=request,
-                    identity=mock_identity,
                     db=db,
+                    api_key=mock_api_key,
                 )
 
             assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_charge_tool_usage_not_found(self, mock_identity):
+    async def test_charge_tool_usage_not_found(self, mock_api_key):
         """charge_tool_usage raises 404 when resource not found."""
         from fastapi import HTTPException
 
@@ -423,7 +441,11 @@ class TestToolChargeEndpoint:
 
         db = AsyncMock()
 
-        request = ToolChargeRequest(product_type="web_search")
+        request = ToolChargeRequest(
+            product_type="web_search",
+            oauth_provider="oauth:google",
+            external_id="user@example.com",
+        )
 
         with patch("app.api.tool_routes.ProductInventoryService") as MockService:
             mock_service = MockService.return_value
@@ -434,14 +456,14 @@ class TestToolChargeEndpoint:
             with pytest.raises(HTTPException) as exc_info:
                 await charge_tool_usage(
                     request=request,
-                    identity=mock_identity,
                     db=db,
+                    api_key=mock_api_key,
                 )
 
             assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_charge_tool_usage_insufficient_credits(self, mock_identity):
+    async def test_charge_tool_usage_insufficient_credits(self, mock_api_key):
         """charge_tool_usage raises 402 when no credits available."""
         from fastapi import HTTPException
 
@@ -449,7 +471,11 @@ class TestToolChargeEndpoint:
 
         db = AsyncMock()
 
-        request = ToolChargeRequest(product_type="web_search")
+        request = ToolChargeRequest(
+            product_type="web_search",
+            oauth_provider="oauth:google",
+            external_id="user@example.com",
+        )
 
         with patch("app.api.tool_routes.ProductInventoryService") as MockService:
             mock_service = MockService.return_value
@@ -460,8 +486,8 @@ class TestToolChargeEndpoint:
             with pytest.raises(HTTPException) as exc_info:
                 await charge_tool_usage(
                     request=request,
-                    identity=mock_identity,
                     db=db,
+                    api_key=mock_api_key,
                 )
 
             assert exc_info.value.status_code == 402
@@ -502,21 +528,31 @@ class TestToolModels:
         assert len(response.balances) == 1
 
     def test_tool_charge_request_model(self):
-        """ToolChargeRequest accepts optional fields."""
+        """ToolChargeRequest requires identity fields and accepts optional tracking fields."""
         from app.api.tool_routes import ToolChargeRequest
 
         request = ToolChargeRequest(
             product_type="web_search",
+            oauth_provider="oauth:google",
+            external_id="user@example.com",
             idempotency_key="key-123",
             request_id="req-456",
         )
         assert request.product_type == "web_search"
+        assert request.oauth_provider == "oauth:google"
+        assert request.external_id == "user@example.com"
         assert request.idempotency_key == "key-123"
 
-        # Optional fields can be None
-        request2 = ToolChargeRequest(product_type="web_search")
+        # Optional tracking fields can be None
+        request2 = ToolChargeRequest(
+            product_type="web_search",
+            oauth_provider="oauth:google",
+            external_id="user@example.com",
+        )
         assert request2.idempotency_key is None
         assert request2.request_id is None
+        assert request2.wa_id is None
+        assert request2.tenant_id is None
 
     def test_tool_charge_response_model(self):
         """ToolChargeResponse has correct fields."""

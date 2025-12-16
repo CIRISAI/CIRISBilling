@@ -12,11 +12,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
-from app.api.dependencies import get_validated_identity
+from app.api.dependencies import (
+    APIKeyData,
+    get_validated_identity,
+    require_permission,
+)
 from app.db.session import get_write_db
 from app.exceptions import InsufficientCreditsError, ResourceNotFoundError
 from app.models.domain import AccountIdentity
 from app.services.product_inventory import ProductInventoryService
+
+# Permission constants
+_PERM_BILLING_WRITE = "billing:write"
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/v1/tools", tags=["tools"])
@@ -51,6 +58,12 @@ class ToolChargeRequest(BaseModel):
     """Request to charge for tool usage."""
 
     product_type: str = Field(..., description="Product type (e.g., 'web_search')")
+    # Identity fields - required when using API key auth, ignored when using JWT
+    oauth_provider: str = Field(..., description="OAuth provider (e.g., 'oauth:google')")
+    external_id: str = Field(..., description="External user ID (e.g., email)")
+    wa_id: str | None = Field(None, description="WhatsApp ID (optional)")
+    tenant_id: str | None = Field(None, description="Tenant ID (optional)")
+    # Tracking fields
     idempotency_key: str | None = Field(None, description="Unique key to prevent duplicate charges")
     request_id: str | None = Field(None, description="Request ID for tracking")
 
@@ -215,8 +228,8 @@ async def check_tool_credit(
 @router.post("/charge", response_model=ToolChargeResponse)
 async def charge_tool_usage(
     request: ToolChargeRequest,
-    identity: Annotated[AccountIdentity, Depends(get_validated_identity)],
     db: Annotated[AsyncSession, Depends(get_write_db)],
+    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
 ) -> ToolChargeResponse:
     """
     Charge for tool usage.
@@ -226,7 +239,18 @@ async def charge_tool_usage(
 
     Returns 402 Payment Required if no credits available.
     Supports idempotency via idempotency_key.
+
+    Authentication: Requires API key with billing:write permission.
+    Identity is specified in the request body (oauth_provider, external_id).
     """
+    # Extract identity from request body (API key auth pattern)
+    identity = AccountIdentity(
+        oauth_provider=request.oauth_provider,
+        external_id=request.external_id,
+        wa_id=request.wa_id,
+        tenant_id=request.tenant_id,
+    )
+
     service = ProductInventoryService(db)
 
     try:
