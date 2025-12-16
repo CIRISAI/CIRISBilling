@@ -12,11 +12,13 @@ ssh -i ~/.ssh/ciris_deploy root@149.28.120.73
 ## Project Overview
 
 **CIRIS Billing** - Credit gating service for CIRIS Agent
-- **Domain**: billing.ciris.ai (will need DNS setup)
-- **Tech Stack**: FastAPI, PostgreSQL, Nginx, Docker Compose
+- **Domain**: billing.ciris.ai
+- **Tech Stack**: FastAPI, PostgreSQL, Docker Compose, GitHub Actions CI/CD
+- **Test Coverage**: 66% (475 tests)
 - **Authentication**:
-  - Agent API: API keys (Argon2id)
+  - Agent API: API keys (Argon2id) with `billing:read`/`billing:write` permissions
   - Admin UI: Google OAuth (@ciris.ai only)
+  - Tool routes: API key auth for service-to-service calls
 
 ---
 
@@ -24,146 +26,150 @@ ssh -i ~/.ssh/ciris_deploy root@149.28.120.73
 
 ```
 ┌─────────────────────────────────────────┐
-│ Nginx (443/80)                          │
-│  ├─ /admin → Static UI                  │
-│  ├─ /admin/oauth/* → FastAPI OAuth      │
-│  ├─ /admin/api/* → FastAPI Admin API    │
-│  └─ /v1/billing/* → FastAPI Billing API │
+│ Caddy (443/80)                          │
+│  ├─ /admin-ui/* → Static UI             │
+│  ├─ /admin/* → FastAPI Admin API        │
+│  ├─ /v1/billing/* → Billing API         │
+│  └─ /v1/tools/* → Tool Credits API      │
 └─────────────────────────────────────────┘
            ↓
 ┌─────────────────────────────────────────┐
 │ FastAPI App (8000)                      │
 │  ├─ Billing API (API key auth)          │
+│  ├─ Tool API (API key auth)             │
 │  └─ Admin API (JWT auth)                │
 └─────────────────────────────────────────┘
            ↓
 ┌─────────────────────────────────────────┐
 │ PostgreSQL (5432)                       │
 │  ├─ accounts, charges, credits          │
+│  ├─ product_inventory, product_usage_log│
 │  ├─ api_keys, admin_users               │
 │  └─ provider_configs, audit_logs        │
 └─────────────────────────────────────────┘
-
-Observability:
-- Jaeger (16686) - Distributed tracing
-- Prometheus (9090) - Metrics
-- Grafana (3000) - Dashboards
 ```
 
 ---
 
-## Nginx Routing Configuration
+## Credit Systems
 
-**IMPORTANT**: The nginx reverse proxy routes different paths to different destinations:
+### Two Credit Pools
 
-### Static Files (Admin UI)
-- `/ ` → serves `/login.html` (root redirects to login)
-- `/admin/*` → serves static files from `/usr/share/nginx/html/admin/`
-- Examples:
-  - `/admin/dashboard.html` → static file
-  - `/admin/dashboard.js` → static file
+1. **Main Account Pool** (`accounts.paid_credits`)
+   - General-purpose credits for LLM usage
+   - Can fall back to this for tool usage
 
-### API Endpoints (Proxied to FastAPI Backend)
+2. **Product Inventory** (`product_inventory` table)
+   - Per-product credits (e.g., `web_search`, `image_gen`)
+   - Has free tier + paid credits per product
+   - Daily refresh of free credits
 
-**OAuth Endpoints** (no `/api/` prefix):
-- `/admin/oauth/login` → proxied to FastAPI `/admin/oauth/login`
-- `/admin/oauth/callback` → proxied to FastAPI `/admin/oauth/callback`
-- `/admin/oauth/user` → proxied to FastAPI `/admin/oauth/user`
+### Credit Priority (for tool charges)
+1. Product free credits (`product_inventory.free_remaining`)
+2. Product paid credits (`product_inventory.paid_credits`)
+3. **Main pool fallback** (`accounts.paid_credits`) - converted at product price
 
-**Admin API Endpoints** (requires `/api/` prefix):
-- `/admin/api/*` → proxied to FastAPI `/admin/*`
-- Examples:
-  - `/admin/api/analytics/overview` → FastAPI `/admin/analytics/overview`
-  - `/admin/api/users` → FastAPI `/admin/users`
-  - `/admin/api/api-keys` → FastAPI `/admin/api-keys`
-  - `/admin/api/config/providers/stripe` → FastAPI `/admin/config/providers/stripe`
+### Key Files
+- `app/services/product_inventory.py` - ProductInventoryService
+- `app/api/tool_routes.py` - `/v1/tools/*` endpoints
+- `app/services/billing.py` - BillingService for main credits
 
-**Billing API Endpoints** (for agents):
-- `/v1/billing/*` → proxied to FastAPI `/v1/billing/*`
+---
 
-### JavaScript API Calls
+## API Routes
 
-When making API calls from dashboard.js, use:
-- OAuth: `/admin/oauth/*` (no `/api/`)
-- Admin API: `/admin/api/*` (with `/api/`)
+### Tool Routes (`/v1/tools/*`)
+- `GET /v1/tools/balance/{product_type}` - Get balance for a product (JWT auth)
+- `GET /v1/tools/balance` - Get all product balances (JWT auth)
+- `GET /v1/tools/check/{product_type}` - Quick credit check (JWT auth)
+- `POST /v1/tools/charge` - Charge for tool usage (API key auth, `billing:write`)
 
-**Example:**
-```javascript
-// OAuth - no /api/ prefix
-fetch('/admin/oauth/user', { headers: { Authorization: `Bearer ${token}` } })
-
-// Admin API - with /api/ prefix
-fetch('/admin/api/analytics/overview', { headers: { Authorization: `Bearer ${token}` } })
-fetch('/admin/api/api-keys', { method: 'POST', ... })
+**Charge Request Body:**
+```json
+{
+  "product_type": "web_search",
+  "oauth_provider": "oauth:google",
+  "external_id": "user@example.com",
+  "wa_id": null,
+  "tenant_id": null,
+  "idempotency_key": "unique-key",
+  "request_id": "req-123"
+}
 ```
+
+### Billing Routes (`/v1/billing/*`)
+- `POST /v1/billing/check` - Check credit availability
+- `POST /v1/billing/charges` - Record usage charge
+- `GET /v1/billing/accounts/{id}` - Get account details
+
+---
+
+## Recent Bug Fixes (Dec 2024)
+
+### 1. Web Search Credits Unavailable
+**Issue:** Users with 568 `paid_credits` in main account getting "no web search credits available"
+**Root Cause:** `product_inventory` table was empty, service only checked product-specific credits
+**Fix:** Added main pool fallback to `ProductInventoryService.charge()` and `get_balance()`
+**Commit:** `ffa21df`
+
+### 2. /v1/tools/charge 401 Unauthorized
+**Issue:** Proxy's service API key rejected by tool charge endpoint
+**Root Cause:** Endpoint used JWT-only auth (`get_validated_identity`)
+**Fix:** Changed to API key auth (`require_permission("billing:write")`) with identity in request body
+**Commit:** `a88a1fb`
+
+### 3. Mypy Export Error
+**Issue:** `APIKeyData` not explicitly exported from `app.api.dependencies`
+**Fix:** Added `__all__` list for explicit re-exports
+**Commit:** `a66e642`
 
 ---
 
 ## Database Schema
 
 **Migration Chain:**
-1. `2025_10_08_0000` - Initial schema (accounts, charges, credits, credit_checks)
-2. `2025_10_08_0001` - Usage tracking (free_uses_remaining, total_uses)
-3. `2025_10_08_0002` - Admin system (api_keys, admin_users, provider_configs, audit_logs)
-4. `2025_10_08_0003` - OAuth (remove password auth, add google_id)
-5. `2025_10_08_0004` - Marketing consent (GDPR compliance)
-6. `2025_10_09_0005` - User metadata (user_role, agent_id)
-7. `2025_10_15_0006` - Customer email field
-8. `2025_10_16_0007` - Remove charge balance consistency constraint
-9. `2025_10_21_0008` - **Add paid_credits field** (architectural change)
+1. `2025_10_08_0000` - Initial schema
+2. `2025_10_08_0001` - Usage tracking
+3. `2025_10_08_0002` - Admin system
+4. `2025_10_08_0003` - OAuth
+5. `2025_10_08_0004` - Marketing consent (GDPR)
+6. `2025_10_09_0005` - User metadata
+7. `2025_10_15_0006` - Customer email
+8. `2025_10_16_0007` - Remove charge balance constraint
+9. `2025_10_21_0008` - Add paid_credits field
+10. `2025_12_XX_0009` - Product inventory tables
 
-### Credits vs Currency Architecture
+### Key Tables
 
-**IMPORTANT:** As of migration `2025_10_21_0008`, the system now separates:
+**accounts:**
+- `paid_credits` - Main credit pool (1 credit = 1 API call)
+- `free_uses_remaining` - Free tier counter
+- `balance_minor` - Reserved for future currency billing
 
-- **`paid_credits`** (BigInteger): Tracks purchased usage credits (1 credit = 1 API call)
-  - Used for all credit operations (purchases, grants, charges)
-  - Migrated from old `balance_minor` values
-  - Current balances:
-    - smartframe.ai@googlemail.com: 50 credits
-    - trent@topbrand-consulting.com: 50 credits
-    - mooreericnyc@gmail.com: 19 credits
+**product_inventory:**
+- `account_id`, `product_type`
+- `free_remaining`, `paid_credits`
+- `last_daily_refresh`, `total_uses`
 
-- **`balance_minor`** (BigInteger): Reserved for future actual currency balance
-  - Currently reset to 0 for all accounts
-  - Will be used when we add currency-based billing (USD, EUR, etc.)
-  - Not used by current billing operations
-
-- **`free_uses_remaining`** (BigInteger): Free tier usage counter
-  - Each new account starts with 3 free uses (configurable)
-  - Decremented before charging paid_credits
-  - Independent of paid credits
+**product_usage_log:**
+- Audit trail for all product charges
+- Supports idempotency via `idempotency_key`
 
 ---
 
 ## Environment Variables & Docker Secrets
 
-**Current Production Setup:**
+**Server credentials:** `/root/.ciris_credentials.txt`
 
-Server credentials are stored in `/root/.ciris_credentials.txt` on the server.
-
-### Docker Secrets (File-based)
-
-Secrets are mounted from Docker volumes into containers at `/run/secrets/`:
-
+### Docker Secrets
 ```bash
-# Secret files locations:
 /var/lib/docker/volumes/cirisbilling_database_url/_data/database_url
 /var/lib/docker/volumes/cirisbilling_admin_jwt_secret/_data/admin_jwt_secret
 /var/lib/docker/volumes/cirisbilling_encryption_key/_data/encryption_key
 /var/lib/docker/volumes/cirisbilling_google_client_secret/_data/google_client_secret
 ```
 
-**DATABASE_URL Format:**
-```
-postgresql+asyncpg://ciris:<URL_ENCODED_PASSWORD>@ciris-billing-postgres:5432/ciris_billing
-```
-Note: Password contains `=` which must be URL-encoded as `%3D`
-
-### Container Startup Command
-
-The billing API container exports secrets as environment variables on startup:
-
+### Container Startup
 ```bash
 sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && \
        export ADMIN_JWT_SECRET=$(cat /run/secrets/admin_jwt_secret) && \
@@ -172,27 +178,20 @@ sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && \
        python -m uvicorn app.main:app --host 0.0.0.0 --port 8000'
 ```
 
-### Environment Variables
+---
 
-```bash
-# PostgreSQL
-POSTGRES_USER=ciris
-POSTGRES_PASSWORD=<from-credentials-file>
-POSTGRES_DB=ciris_billing
+## CI/CD
 
-# Stripe (stored in provider_configs table, not env vars)
-STRIPE_API_KEY=sk_test_placeholder  # Fallback only
-STRIPE_WEBHOOK_SECRET=whsec_placeholder  # Fallback only
-STRIPE_PUBLISHABLE_KEY=pk_test_placeholder  # Fallback only
+**GitHub Actions Workflows:**
+- `CI` - Tests, mypy, linting
+- `SonarCloud` - Code quality analysis
+- `Build & Push Docker` - ghcr.io/cirisai/cirisbilling
+- `Deploy` - Auto-deploy to production on main push
 
-# Google OAuth
-GOOGLE_CLIENT_ID=265882853697-vsrucm66hl39jei1f5f20kb49om8t9pb.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=<from-docker-secret>
-
-# App Config
-ENVIRONMENT=production
-LOG_LEVEL=INFO
-```
+**Pre-commit Hooks:**
+- ruff (linting)
+- ruff-format
+- trailing whitespace, end of files, yaml check
 
 ---
 
@@ -201,13 +200,9 @@ LOG_LEVEL=INFO
 ```bash
 # SSH to server
 ssh -i ~/.ssh/ciris_deploy root@billing.ciris.ai
-# Alternative: ssh -i ~/.ssh/ciris_deploy root@149.28.120.73
 
 # Check service health
 curl https://billing.ciris.ai/health
-
-# View running containers
-docker ps --filter name=billing
 
 # View logs
 docker logs ciris-billing-api --tail 100 -f
@@ -215,52 +210,36 @@ docker logs ciris-billing-api --tail 100 -f
 # Run migrations
 docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic upgrade head'
 
-# Check current migration version
-docker exec ciris-billing-api sh -c 'export DATABASE_URL=$(cat /run/secrets/database_url) && alembic current'
-
 # Access database
 docker exec ciris-billing-postgres psql -U ciris -d ciris_billing
 
-# Rebuild and deploy new code
-cd /root/CIRISBilling
-docker compose build
-docker stop ciris-billing-api && docker rm ciris-billing-api
-# Then start with proper command (see Container Startup Command section)
+# Run tests locally
+python -m pytest --tb=short
 
-# Restart service
-docker restart ciris-billing-api
+# Run mypy
+python -m mypy app/ --strict
 ```
 
-## Deployment Process
+---
 
-1. **Sync code to server:**
-   ```bash
-   rsync -avz -e "ssh -i ~/.ssh/ciris_deploy" \
-     --include='alembic/***' \
-     --include='app/***' \
-     --include='*.py' \
-     --exclude='*' \
-     /local/path/CIRISBilling/ root@billing.ciris.ai:/root/CIRISBilling/
-   ```
+## CIRIS Covenant Alignment
 
-2. **Rebuild Docker image:**
-   ```bash
-   ssh -i ~/.ssh/ciris_deploy root@billing.ciris.ai "cd /root/CIRISBilling && docker compose build"
-   ```
+See `MISSION_ALIGNMENT.md` for full details on how CIRISBilling aligns with the CIRIS Covenant 1.0b.
 
-3. **Stop and remove old container:**
-   ```bash
-   ssh -i ~/.ssh/ciris_deploy root@billing.ciris.ai "docker stop ciris-billing-api && docker rm ciris-billing-api"
-   ```
+**Key Principles:**
+- Non-maleficence: Safe operations, no user harm
+- Beneficence: Enable AI capabilities through credit management
+- Transparency: Full audit trail, observable metrics
+- Justice: Fair pricing, no discrimination
 
-4. **Start new container** (with secret exports - see Container Startup Command section)
+---
 
-5. **Run migrations:**
-   ```bash
-   ssh -i ~/.ssh/ciris_deploy root@billing.ciris.ai "docker exec ciris-billing-api sh -c 'export DATABASE_URL=\$(cat /run/secrets/database_url) && alembic upgrade head'"
-   ```
+## Related Projects
 
-6. **Verify health:**
-   ```bash
-   curl https://billing.ciris.ai/health
-   ```
+- **CIRISBridge** - Infrastructure/deployment (Ansible)
+  - Ticket `SAGE-001`: Production CIRISManager for SAGE GDPR agent
+  - See `/home/emoore/CIRISBridge/docs/tickets/SAGE-001-prod-cirismanager.md`
+
+- **CIRISProxy** - API proxy service (calls billing API for charges)
+
+- **SAGE** - GDPR compliance agent (planned integration)
