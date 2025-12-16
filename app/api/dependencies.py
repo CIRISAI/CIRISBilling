@@ -20,6 +20,13 @@ from app.models.domain import AccountIdentity
 from app.services.api_key import APIKeyData, APIKeyService
 from app.services.token_revocation import token_revocation_service
 
+# Explicit re-exports for mypy strict mode
+__all__ = [
+    "APIKeyData",
+    "get_validated_identity",
+    "require_permission",
+]
+
 logger = get_logger(__name__)
 
 # ============================================================================
