@@ -924,3 +924,110 @@ class TestDisplayName:
         # The account should have the display_name set
         assert added_account.display_name == "Test User"
         assert added_account.customer_email == "user@example.com"
+
+
+class TestDuplicateAccountHandling:
+    """Tests for handling duplicate accounts gracefully (BILLING-001)."""
+
+    async def test_find_account_handles_multiple_results(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test that _find_account_by_identity handles duplicate accounts gracefully."""
+        from sqlalchemy.exc import MultipleResultsFound
+
+        # Create two mock accounts (duplicates)
+        older_account = create_mock_account(test_account_identity)
+        older_account.created_at = datetime(2025, 1, 1, tzinfo=UTC)
+
+        newer_account = create_mock_account(test_account_identity)
+        newer_account.created_at = datetime(2025, 12, 17, tzinfo=UTC)
+
+        service = BillingService(db_session)
+
+        # First call raises MultipleResultsFound, second returns oldest
+        call_count = 0
+
+        async def mock_execute(stmt):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                # First query - simulate MultipleResultsFound
+                result.scalar_one_or_none = MagicMock(side_effect=MultipleResultsFound())
+            else:
+                # Second query (ordered) - return the oldest account
+                result.scalar_one_or_none = MagicMock(return_value=older_account)
+            return result
+
+        db_session.execute = mock_execute
+
+        # Should not raise, should return the older account
+        result = await service._find_account_by_identity(test_account_identity)
+
+        assert result is not None
+        assert result.created_at == older_account.created_at
+
+    async def test_lock_account_handles_multiple_results(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test that _lock_account_for_update handles duplicate accounts gracefully."""
+        from sqlalchemy.exc import MultipleResultsFound
+
+        older_account = create_mock_account(test_account_identity)
+        older_account.created_at = datetime(2025, 1, 1, tzinfo=UTC)
+
+        service = BillingService(db_session)
+
+        call_count = 0
+
+        async def mock_execute(stmt):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                result.scalar_one_or_none = MagicMock(side_effect=MultipleResultsFound())
+            else:
+                result.scalar_one_or_none = MagicMock(return_value=older_account)
+            return result
+
+        db_session.execute = mock_execute
+
+        result = await service._lock_account_for_update(test_account_identity)
+
+        assert result is not None
+        assert result.created_at == older_account.created_at
+
+    async def test_get_or_create_handles_integrity_error_race(
+        self, db_session: AsyncMock, test_account_identity: AccountIdentity
+    ) -> None:
+        """Test get_or_create_account handles IntegrityError from race condition."""
+        from sqlalchemy.exc import IntegrityError
+
+        existing_account = create_mock_account(test_account_identity, paid_credits=10)
+
+        service = BillingService(db_session)
+
+        find_call_count = 0
+
+        async def mock_find(identity):
+            nonlocal find_call_count
+            find_call_count += 1
+            if find_call_count == 1:
+                return None  # First call: no account exists
+            return existing_account  # After IntegrityError: account exists
+
+        # Flush raises IntegrityError (constraint violation from race)
+        db_session.flush = AsyncMock(
+            side_effect=IntegrityError("duplicate key", None, None)
+        )
+        db_session.rollback = AsyncMock()
+
+        with patch.object(service, "_find_account_by_identity", side_effect=mock_find):
+            result = await service.get_or_create_account(
+                test_account_identity,
+                initial_balance_minor=0,
+            )
+
+        # Should return the existing account after handling the race
+        assert result.paid_credits == 10
+        db_session.rollback.assert_called_once()

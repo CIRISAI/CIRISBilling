@@ -4,10 +4,11 @@ Billing Service - Core business logic with write verification.
 NO DICTIONARIES - All operations use strongly typed domain models.
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Account, Charge, Credit, CreditCheck
@@ -35,6 +36,8 @@ from app.models.domain import (
     CreditData,
     CreditIntent,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -681,13 +684,36 @@ class BillingService:
 
         Primary match: oauth_provider + external_id (these uniquely identify a user)
         Optional fields: wa_id and tenant_id are ignored for lookup
+
+        Handles duplicate accounts gracefully by returning the oldest one and logging a warning.
         """
         stmt = select(Account).where(
             Account.oauth_provider == identity.oauth_provider,
             Account.external_id == identity.external_id,
         )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        try:
+            return result.scalar_one_or_none()
+        except MultipleResultsFound:
+            # Duplicate accounts exist - log warning and return oldest (first created)
+            logger.warning(
+                "Duplicate accounts found for oauth_provider=%s external_id=%s - "
+                "returning oldest account. Please clean up duplicates.",
+                identity.oauth_provider,
+                identity.external_id,
+            )
+            # Re-execute with ordering to get the oldest account
+            stmt_ordered = (
+                select(Account)
+                .where(
+                    Account.oauth_provider == identity.oauth_provider,
+                    Account.external_id == identity.external_id,
+                )
+                .order_by(Account.created_at.asc())
+                .limit(1)
+            )
+            result_ordered = await self.session.execute(stmt_ordered)
+            return result_ordered.scalar_one_or_none()
 
     async def _lock_account_for_update(self, identity: AccountIdentity) -> Account | None:
         """
@@ -695,6 +721,8 @@ class BillingService:
 
         Primary match: oauth_provider + external_id (these uniquely identify a user)
         Optional fields: wa_id and tenant_id are ignored for lookup
+
+        Handles duplicate accounts gracefully by locking the oldest one and logging a warning.
         """
         stmt = (
             select(Account)
@@ -705,7 +733,29 @@ class BillingService:
             .with_for_update()
         )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        try:
+            return result.scalar_one_or_none()
+        except MultipleResultsFound:
+            # Duplicate accounts exist - log warning and return oldest (first created)
+            logger.warning(
+                "Duplicate accounts found for oauth_provider=%s external_id=%s - "
+                "locking oldest account. Please clean up duplicates.",
+                identity.oauth_provider,
+                identity.external_id,
+            )
+            # Re-execute with ordering to get the oldest account
+            stmt_ordered = (
+                select(Account)
+                .where(
+                    Account.oauth_provider == identity.oauth_provider,
+                    Account.external_id == identity.external_id,
+                )
+                .order_by(Account.created_at.asc())
+                .limit(1)
+                .with_for_update()
+            )
+            result_ordered = await self.session.execute(stmt_ordered)
+            return result_ordered.scalar_one_or_none()
 
     async def _find_charge_by_idempotency(self, idempotency_key: str) -> Charge | None:
         """Find charge by idempotency key."""

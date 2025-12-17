@@ -2,6 +2,8 @@
 
 A production-grade, horizontally scalable billing service for credit-based usage gating in CIRIS Agent. Designed to replace the Unlimit.com integration with a self-hosted solution featuring PostgreSQL replication, write verification, and zero-dictionary type safety.
 
+**Version:** 0.1.0
+
 ## Features
 
 - **Horizontal Scalability**: Stateless API instances with load balancing
@@ -10,6 +12,7 @@ A production-grade, horizontally scalable billing service for credit-based usage
 - **Type Safety**: Zero dictionary usage - full Pydantic + SQLAlchemy typing
 - **Idempotency**: All mutations support idempotency keys
 - **Containerization**: Complete Docker Compose orchestration
+- **Automatic Migrations**: Database migrations run automatically at startup
 
 ## Architecture
 
@@ -70,14 +73,9 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
-### 3. Run Database Migrations
+### 3. Verify Health
 
-```bash
-# Run migrations on primary database
-docker-compose exec billing-api-1 alembic upgrade head
-```
-
-### 4. Verify Health
+> **Note:** Database migrations run automatically when the application starts. No manual migration step is required.
 
 ```bash
 # Check API health through load balancer
@@ -246,10 +244,7 @@ pip install -r requirements-dev.txt
 # Set environment variables
 export DATABASE_URL="postgresql+asyncpg://billing_admin:password@localhost:5432/ciris_billing"
 
-# Run migrations
-alembic upgrade head
-
-# Start development server
+# Start development server (migrations run automatically)
 python -m app.main
 ```
 
@@ -356,7 +351,8 @@ docker-compose logs -f nginx
 - `accounts.balance_minor >= 0` (non-negative balance)
 - `charges.balance_after = balance_before - amount_minor` (balance consistency)
 - `credits.balance_after = balance_before + amount_minor` (balance consistency)
-- Unique constraint on `(oauth_provider, external_id, wa_id, tenant_id)`
+- Unique constraint on `(oauth_provider, external_id)` - prevents duplicate accounts
+- Legacy unique constraint on `(oauth_provider, external_id, wa_id, tenant_id)` for backwards compatibility
 
 ## Configuration
 

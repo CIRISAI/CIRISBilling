@@ -20,6 +20,7 @@ from app.api.routes import router
 from app.api.status_routes import router as status_router
 from app.api.tool_routes import router as tool_router
 from app.config import settings
+from app.db.migration_runner import run_migrations
 from app.db.session import close_engines
 from app.observability import get_logger, metrics, setup_logging, setup_tracing
 from app.observability.tracing import instrument_fastapi
@@ -44,6 +45,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tracing_enabled=settings.tracing_enabled,
         metrics_enabled=settings.metrics_enabled,
     )
+
+    # Run database migrations
+    try:
+        logger.info("running_database_migrations")
+        run_migrations()
+        logger.info("database_migrations_complete")
+    except Exception as e:
+        logger.error("database_migrations_failed", error=str(e))
+        raise
 
     yield
 

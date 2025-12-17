@@ -120,6 +120,14 @@ class Account(Base):
         CheckConstraint("paid_credits >= 0", name="ck_paid_credits_non_negative"),
         CheckConstraint("daily_free_uses_remaining >= 0", name="ck_daily_free_uses_non_negative"),
         CheckConstraint("daily_free_uses_limit > 0", name="ck_daily_free_uses_limit_positive"),
+        # Primary unique constraint: oauth_provider + external_id uniquely identify a user
+        # This prevents duplicate accounts even when wa_id/tenant_id are NULL
+        UniqueConstraint(
+            "oauth_provider",
+            "external_id",
+            name="uq_accounts_oauth_external_id",
+        ),
+        # Legacy constraint kept for backwards compatibility (may have existing data)
         UniqueConstraint(
             "oauth_provider",
             "external_id",
