@@ -46,10 +46,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         metrics_enabled=settings.metrics_enabled,
     )
 
-    # Run database migrations
+    # Run database migrations in a thread to avoid event loop conflicts
+    # (alembic's env.py uses asyncio.run() which can't run in an existing loop)
+    import asyncio
+
     try:
         logger.info("running_database_migrations")
-        run_migrations()
+        await asyncio.to_thread(run_migrations)
         logger.info("database_migrations_complete")
     except Exception as e:
         logger.error("database_migrations_failed", error=str(e))
