@@ -8,10 +8,11 @@ when the application starts.
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 
-from alembic import command
+from alembic import command  # type: ignore[attr-defined]
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -36,17 +37,19 @@ def _get_sync_database_url() -> str:
     return url.replace("asyncpg", "psycopg2")
 
 
-def _get_current_revision(engine) -> str | None:
+def _get_current_revision(engine: Engine) -> str | None:
     """Get the current database revision."""
     with engine.connect() as conn:
         context = MigrationContext.configure(conn)
-        return context.get_current_revision()
+        rev: str | None = context.get_current_revision()
+        return rev
 
 
-def _get_head_revision(alembic_cfg: Config) -> str:
+def _get_head_revision(alembic_cfg: Config) -> str | None:
     """Get the head revision from migration scripts."""
     script = ScriptDirectory.from_config(alembic_cfg)
-    return script.get_current_head()
+    head: str | None = script.get_current_head()
+    return head
 
 
 def run_migrations() -> None:
@@ -96,7 +99,7 @@ def run_migrations() -> None:
         raise RuntimeError(f"Database migration failed: {e}") from e
 
 
-def check_migrations_status() -> dict:
+def check_migrations_status() -> dict[str, Any]:
     """
     Check migration status without applying them.
 
