@@ -124,7 +124,7 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
 def get_log_shipper_stats() -> dict[str, int | float | str | None] | None:
     """Get CIRISLens log shipper stats (if enabled)."""
     if _log_shipper:
-        return _log_shipper.get_stats()  # type: ignore[return-value]
+        return _log_shipper.get_stats()  # type: ignore[no-any-return]
     return None
 
 
