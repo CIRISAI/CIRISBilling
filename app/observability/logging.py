@@ -55,7 +55,7 @@ def setup_logging() -> None:
     # Setup CIRISLens log shipping if token is configured
     if settings.cirislens_token:
         try:
-            from app.logshipper import LogShipper, LogShipperHandler
+            from libs.cirislens.sdk import LogShipper, LogShipperHandler
 
             _log_shipper = LogShipper(
                 service_name=settings.service_name,
