@@ -6,11 +6,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from prometheus_client import generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -227,10 +226,58 @@ app.include_router(status_router)  # Status/health checks (public)
 app.include_router(admin_auth_router)  # Admin OAuth routes
 app.include_router(admin_router)  # Admin API routes
 
-# Mount static files for admin UI (at /admin-ui/ to avoid conflict with /admin API routes)
+# Serve admin UI with authentication check
 _static_dir = Path(__file__).parent.parent / "static" / "admin"
-if _static_dir.exists():
-    app.mount("/admin-ui", StaticFiles(directory=str(_static_dir), html=True), name="admin-ui")
+
+
+@app.get("/admin-ui/login.html")
+async def admin_login_page() -> Response:
+    """Serve login page (public)."""
+    login_file = _static_dir / "login.html"
+    if login_file.exists():
+        return Response(content=login_file.read_text(), media_type="text/html")
+    raise HTTPException(status_code=404, detail="Login page not found")
+
+
+@app.get("/admin-ui/{path:path}")
+async def admin_ui_protected(path: str, request: Request) -> Response:
+    """Serve admin UI files - requires authentication."""
+    # Check for admin token in cookie
+    token = request.cookies.get("admin_token")
+    if not token:
+        return RedirectResponse(url="/admin-ui/login.html", status_code=302)
+
+    # Serve the requested file
+    if not path or path == "":
+        path = "index.html"
+
+    file_path = _static_dir / path
+    if not file_path.exists() or not file_path.is_file():
+        # Try with .html extension
+        file_path = _static_dir / f"{path}.html"
+
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Security: ensure path doesn't escape static dir
+    try:
+        file_path.resolve().relative_to(_static_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Determine content type
+    suffix = file_path.suffix.lower()
+    content_types = {
+        ".html": "text/html",
+        ".js": "application/javascript",
+        ".css": "text/css",
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".ico": "image/x-icon",
+    }
+    content_type = content_types.get(suffix, "application/octet-stream")
+
+    return Response(content=file_path.read_bytes(), media_type=content_type)
 
 
 @app.get("/")
