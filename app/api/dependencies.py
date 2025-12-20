@@ -222,7 +222,17 @@ async def get_user_from_google_token(
     )
 
     error_msg = last_error or "Token validation failed"
-    if "audience" in error_msg.lower():
+    error_lower = error_msg.lower()
+
+    # Check for expired token - return clear, actionable error
+    if "expired" in error_lower or "too late" in error_lower or "too early" in error_lower:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "token_expired", "message": "Your session has expired. Please sign in again."},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if "audience" in error_lower:
         _raise_auth_error("Invalid token audience. Token not issued for this application.")
     _raise_auth_error(f"Invalid Google ID token: {error_msg}")
 

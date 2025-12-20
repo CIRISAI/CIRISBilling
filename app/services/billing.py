@@ -172,16 +172,27 @@ class BillingService:
                 await self.session.commit()
             except IntegrityError as e:
                 # Race condition - account created by another request
-                from structlog import get_logger
-
-                logger = get_logger(__name__)
-                logger.error(
-                    "account_creation_integrity_error", error=str(e), identity=str(identity)
-                )
+                # This is expected when multiple requests try to create the same account
                 await self.session.rollback()
+                # Expire all to clear any cached state after rollback
+                self.session.expire_all()
+                # Re-query for the account that was created by the competing request
                 account = await self._find_account_by_identity(identity)
                 if account is None:
-                    raise WriteVerificationError(f"Account creation failed: {str(e)}")
+                    # Very rare: competing insert also failed or rolled back
+                    logger.error(
+                        "account_creation_race_condition_unrecoverable",
+                        error=str(e),
+                        identity=str(identity),
+                    )
+                    raise WriteVerificationError(
+                        "Account creation failed due to race condition"
+                    )
+                logger.info(
+                    "account_creation_race_condition_resolved",
+                    account_id=str(account.id),
+                    identity=str(identity),
+                )
             else:
                 # Successfully created
                 account = new_account
@@ -514,12 +525,29 @@ class BillingService:
 
         try:
             await self.session.flush()
-        except IntegrityError:
+        except IntegrityError as e:
             # Race condition - account created by another request
+            # This is expected when multiple requests try to create the same account
             await self.session.rollback()
+            # Expire all to clear any cached state after rollback
+            self.session.expire_all()
+            # Re-query for the account that was created by the competing request
             account = await self._find_account_by_identity(identity)
             if account is None:
-                raise WriteVerificationError("Account creation failed due to race condition")
+                # Very rare: competing insert also failed or rolled back
+                logger.error(
+                    "account_creation_race_condition_unrecoverable",
+                    error=str(e),
+                    identity=str(identity),
+                )
+                raise WriteVerificationError(
+                    "Account creation failed due to race condition"
+                )
+            logger.info(
+                "account_creation_race_condition_resolved",
+                account_id=str(account.id),
+                identity=str(identity),
+            )
             return self._account_to_domain(account)
 
         # Verify account was written
