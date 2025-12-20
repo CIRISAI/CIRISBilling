@@ -228,7 +228,10 @@ async def get_user_from_google_token(
     if "expired" in error_lower or "too late" in error_lower or "too early" in error_lower:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "token_expired", "message": "Your session has expired. Please sign in again."},
+            detail={
+                "error": "token_expired",
+                "message": "Your session has expired. Please sign in again.",
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
 

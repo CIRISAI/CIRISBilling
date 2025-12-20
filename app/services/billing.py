@@ -185,9 +185,7 @@ class BillingService:
                         error=str(e),
                         identity=str(identity),
                     )
-                    raise WriteVerificationError(
-                        "Account creation failed due to race condition"
-                    )
+                    raise WriteVerificationError("Account creation failed due to race condition")
                 logger.info(
                     "account_creation_race_condition_resolved",
                     account_id=str(account.id),
@@ -540,9 +538,7 @@ class BillingService:
                     error=str(e),
                     identity=str(identity),
                 )
-                raise WriteVerificationError(
-                    "Account creation failed due to race condition"
-                )
+                raise WriteVerificationError("Account creation failed due to race condition")
             logger.info(
                 "account_creation_race_condition_resolved",
                 account_id=str(account.id),
@@ -687,7 +683,7 @@ class BillingService:
             amount_minor=credit_amount,  # Adding uses, not cents
             currency="USD",
             transaction_type=TransactionType.PURCHASE,
-            description=f"Purchased ${amount_paid_minor/100:.2f} ({uses_to_add} uses) via Stripe",
+            description=f"Purchased ${amount_paid_minor / 100:.2f} ({uses_to_add} uses) via Stripe",
             external_transaction_id=payment_id,
             idempotency_key=f"stripe-{payment_id}",
             is_test=is_test,
