@@ -181,15 +181,15 @@ class BillingService:
                 if account is None:
                     # Very rare: competing insert also failed or rolled back
                     logger.error(
-                        "account_creation_race_condition_unrecoverable",
-                        error=str(e),
-                        identity=str(identity),
+                        "account_creation_race_condition_unrecoverable error=%s identity=%s",
+                        str(e),
+                        str(identity),
                     )
                     raise WriteVerificationError("Account creation failed due to race condition")
                 logger.info(
-                    "account_creation_race_condition_resolved",
-                    account_id=str(account.id),
-                    identity=str(identity),
+                    "account_creation_race_condition_resolved account_id=%s identity=%s",
+                    str(account.id),
+                    str(identity),
                 )
             else:
                 # Successfully created
@@ -534,15 +534,15 @@ class BillingService:
             if account is None:
                 # Very rare: competing insert also failed or rolled back
                 logger.error(
-                    "account_creation_race_condition_unrecoverable",
-                    error=str(e),
-                    identity=str(identity),
+                    "account_creation_race_condition_unrecoverable error=%s identity=%s",
+                    str(e),
+                    str(identity),
                 )
                 raise WriteVerificationError("Account creation failed due to race condition")
             logger.info(
-                "account_creation_race_condition_resolved",
-                account_id=str(account.id),
-                identity=str(identity),
+                "account_creation_race_condition_resolved account_id=%s identity=%s",
+                str(account.id),
+                str(identity),
             )
             return self._account_to_domain(account)
 
