@@ -44,7 +44,7 @@
 
         // Check if already logged in
         if (localStorage.getItem(TOKEN_KEY) && localStorage.getItem(USER_KEY)) {
-            window.location.href = '/admin/dashboard.html';
+            window.location.href = '/admin-ui/dashboard.html';
         }
 
         // Check for OAuth callback
@@ -77,7 +77,7 @@
                     role: user.role
                 }));
                 // Redirect to dashboard
-                window.location.href = '/admin/dashboard.html';
+                window.location.href = '/admin-ui/dashboard.html';
             })
             .catch(error => {
                 console.error('Login error:', error);
