@@ -4,6 +4,7 @@ FastAPI Dependencies - Authentication and authorization.
 NO DICTIONARIES - All dependencies return typed objects.
 """
 
+import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import NoReturn
@@ -130,6 +131,22 @@ async def get_user_from_google_token(
         _raise_auth_error("Authorization header required")
 
     token = credentials.credentials
+
+    # Test token authentication (for automated testing only)
+    if settings.CIRIS_TEST_AUTH_ENABLED and settings.CIRIS_TEST_AUTH_TOKEN:
+        if secrets.compare_digest(token, settings.CIRIS_TEST_AUTH_TOKEN):
+            test_user_id = settings.CIRIS_TEST_USER_ID or "test-user-automated"
+            logger.warning(
+                "test_token_auth_used",
+                external_id=test_user_id,
+                oauth_provider="oauth:test",
+            )
+            return UserIdentity(
+                oauth_provider="oauth:test",
+                external_id=test_user_id,
+                email=f"{test_user_id}@test.ciris.ai",
+                name="Automated Test User",
+            )
 
     # SECURITY: Check if token has been revoked
     if await token_revocation_service.is_revoked(token, db):

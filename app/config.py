@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""  # Google OAuth client secret
     ADMIN_JWT_SECRET: str = ""  # JWT secret for admin tokens (generate with: openssl rand -hex 32)
 
+    # Test Authentication (for automated testing only - NEVER enable in production)
+    CIRIS_TEST_AUTH_ENABLED: bool = False
+    CIRIS_TEST_AUTH_TOKEN: str = ""
+    CIRIS_TEST_USER_ID: str = "test-user-automated"
+
     @property
     def valid_google_client_ids(self) -> list[str]:
         """Get list of valid Google client IDs for token validation."""
@@ -136,6 +141,15 @@ class Settings(BaseSettings):
             errors.append(
                 f"DATABASE_URL must be a PostgreSQL URL, got: {self.database_url[:20]}..."
             )
+
+        # Validate test auth configuration
+        if self.CIRIS_TEST_AUTH_ENABLED:
+            if self.environment.lower() == "production":
+                errors.append("CIRIS_TEST_AUTH_ENABLED must not be True in production")
+            if len(self.CIRIS_TEST_AUTH_TOKEN) < 64:
+                errors.append(
+                    "CIRIS_TEST_AUTH_TOKEN must be at least 64 characters when test auth is enabled"
+                )
 
         # If we have errors, fail immediately with clear messaging
         if errors:

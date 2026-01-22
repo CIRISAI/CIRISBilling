@@ -581,3 +581,157 @@ class TestGetValidatedIdentity:
             assert result.external_id == "user123"
             assert result.wa_id is None
             assert result.tenant_id is None
+
+
+class TestTestTokenAuthentication:
+    """Tests for test token authentication (development/testing feature)."""
+
+    @pytest.fixture
+    def db_session(self):
+        """Create mock database session."""
+        return AsyncMock()
+
+    @pytest.fixture
+    def mock_credentials(self):
+        """Create mock HTTP credentials with test token."""
+        creds = MagicMock(spec=HTTPAuthorizationCredentials)
+        creds.credentials = "a" * 64  # Valid test token (64+ chars)
+        return creds
+
+    @pytest.fixture(autouse=True)
+    def clear_cache(self):
+        """Clear token cache before each test."""
+        _google_token_cache.clear()
+        yield
+        _google_token_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_test_token_disabled_by_default(
+        self,
+        mock_credentials: MagicMock,
+        db_session: AsyncMock,
+    ):
+        """Test token auth is disabled when CIRIS_TEST_AUTH_ENABLED is False."""
+        with patch("app.api.dependencies.settings") as mock_settings:
+            mock_settings.CIRIS_TEST_AUTH_ENABLED = False
+            mock_settings.CIRIS_TEST_AUTH_TOKEN = "a" * 64
+            mock_settings.valid_google_client_ids = []
+
+            with patch("app.api.dependencies.token_revocation_service") as mock_revoke:
+                mock_revoke.is_revoked = AsyncMock(return_value=False)
+
+                # Should fall through to Google auth (and fail without client IDs)
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_user_from_google_token(mock_credentials, db_session)
+
+                assert exc_info.value.status_code == 500
+                assert "no Google client IDs" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_test_token_enabled_and_matching(
+        self,
+        db_session: AsyncMock,
+    ):
+        """Test token auth succeeds when enabled and token matches."""
+        test_token = "b" * 64
+        creds = MagicMock(spec=HTTPAuthorizationCredentials)
+        creds.credentials = test_token
+
+        with patch("app.api.dependencies.settings") as mock_settings:
+            mock_settings.CIRIS_TEST_AUTH_ENABLED = True
+            mock_settings.CIRIS_TEST_AUTH_TOKEN = test_token
+            mock_settings.CIRIS_TEST_USER_ID = "test-user-123"
+
+            result = await get_user_from_google_token(creds, db_session)
+
+            assert result.oauth_provider == "oauth:test"
+            assert result.external_id == "test-user-123"
+            assert result.email == "test-user-123@test.ciris.ai"
+            assert result.name == "Automated Test User"
+
+    @pytest.mark.asyncio
+    async def test_test_token_enabled_but_not_matching(
+        self,
+        mock_credentials: MagicMock,
+        db_session: AsyncMock,
+    ):
+        """Test token auth falls through to Google auth when token doesn't match."""
+        with patch("app.api.dependencies.settings") as mock_settings:
+            mock_settings.CIRIS_TEST_AUTH_ENABLED = True
+            mock_settings.CIRIS_TEST_AUTH_TOKEN = "different_token_" + "x" * 49
+            mock_settings.valid_google_client_ids = []
+
+            with patch("app.api.dependencies.token_revocation_service") as mock_revoke:
+                mock_revoke.is_revoked = AsyncMock(return_value=False)
+
+                # Should fall through to Google auth (and fail without client IDs)
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_user_from_google_token(mock_credentials, db_session)
+
+                # Fails on Google auth, not test token
+                assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_test_token_default_user_id(
+        self,
+        db_session: AsyncMock,
+    ):
+        """Test token uses default user ID when CIRIS_TEST_USER_ID not set."""
+        test_token = "c" * 64
+        creds = MagicMock(spec=HTTPAuthorizationCredentials)
+        creds.credentials = test_token
+
+        with patch("app.api.dependencies.settings") as mock_settings:
+            mock_settings.CIRIS_TEST_AUTH_ENABLED = True
+            mock_settings.CIRIS_TEST_AUTH_TOKEN = test_token
+            mock_settings.CIRIS_TEST_USER_ID = ""  # Not set
+
+            result = await get_user_from_google_token(creds, db_session)
+
+            assert result.external_id == "test-user-automated"
+
+    @pytest.mark.asyncio
+    async def test_test_token_no_token_configured(
+        self,
+        mock_credentials: MagicMock,
+        db_session: AsyncMock,
+    ):
+        """Test token auth falls through when no token configured."""
+        with patch("app.api.dependencies.settings") as mock_settings:
+            mock_settings.CIRIS_TEST_AUTH_ENABLED = True
+            mock_settings.CIRIS_TEST_AUTH_TOKEN = ""  # Empty
+            mock_settings.valid_google_client_ids = []
+
+            with patch("app.api.dependencies.token_revocation_service") as mock_revoke:
+                mock_revoke.is_revoked = AsyncMock(return_value=False)
+
+                # Should fall through to Google auth
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_user_from_google_token(mock_credentials, db_session)
+
+                assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_test_token_logs_warning(
+        self,
+        db_session: AsyncMock,
+    ):
+        """Test token auth logs a warning for audit purposes."""
+        test_token = "d" * 64
+        creds = MagicMock(spec=HTTPAuthorizationCredentials)
+        creds.credentials = test_token
+
+        with patch("app.api.dependencies.settings") as mock_settings:
+            mock_settings.CIRIS_TEST_AUTH_ENABLED = True
+            mock_settings.CIRIS_TEST_AUTH_TOKEN = test_token
+            mock_settings.CIRIS_TEST_USER_ID = "audit-test-user"
+
+            with patch("app.api.dependencies.logger") as mock_logger:
+                result = await get_user_from_google_token(creds, db_session)
+
+                # Verify warning was logged
+                mock_logger.warning.assert_called_once()
+                call_args = mock_logger.warning.call_args
+                assert call_args[0][0] == "test_token_auth_used"
+                assert call_args[1]["external_id"] == "audit-test-user"
+                assert call_args[1]["oauth_provider"] == "oauth:test"
