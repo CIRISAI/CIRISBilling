@@ -220,6 +220,8 @@ class TestGetUserFromGoogleToken:
 
             with patch("app.api.dependencies.settings") as mock_settings:
                 mock_settings.valid_google_client_ids = []
+                mock_settings.CIRIS_TEST_AUTH_ENABLED = False
+                mock_settings.CIRIS_TEST_AUTH_TOKEN = ""
 
                 with pytest.raises(HTTPException) as exc_info:
                     await get_user_from_google_token(mock_credentials, db_session)
