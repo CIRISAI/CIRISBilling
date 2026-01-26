@@ -891,12 +891,14 @@ class TestDisplayName:
         """Test account creation includes display_name."""
         service = BillingService(db_session)
 
-        # Track the account that gets added
+        # Track the account that gets added (ignore ProductInventory objects)
         added_account = None
 
-        def capture_add(account):
+        def capture_add(obj):
             nonlocal added_account
-            added_account = account
+            # Only capture Account objects, not ProductInventory
+            if isinstance(obj, Account):
+                added_account = obj
 
         db_session.add = MagicMock(side_effect=capture_add)
 
