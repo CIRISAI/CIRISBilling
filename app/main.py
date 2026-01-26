@@ -241,12 +241,7 @@ async def admin_login_page() -> Response:
 
 @app.get("/admin-ui/{path:path}")
 async def admin_ui_protected(path: str, request: Request) -> Response:
-    """Serve admin UI files - requires authentication."""
-    # Check for admin token in cookie
-    token = request.cookies.get("admin_token")
-    if not token:
-        return RedirectResponse(url="/admin-ui/login.html", status_code=302)
-
+    """Serve admin UI files - HTML requires authentication, static assets are public."""
     # Serve the requested file
     if not path or path == "":
         path = "index.html"
@@ -276,6 +271,13 @@ async def admin_ui_protected(path: str, request: Request) -> Response:
         ".ico": "image/x-icon",
     }
     content_type = content_types.get(suffix, "application/octet-stream")
+
+    # Only require auth for HTML pages (not JS, CSS, images, etc.)
+    # Static assets need to load for the login page to work
+    if suffix == ".html" and path != "login.html":
+        token = request.cookies.get("admin_token")
+        if not token:
+            return RedirectResponse(url="/admin-ui/login.html", status_code=302)
 
     return Response(content=file_path.read_bytes(), media_type=content_type)
 
