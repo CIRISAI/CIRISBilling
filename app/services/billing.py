@@ -138,6 +138,7 @@ class BillingService:
         Logs the check for audit purposes.
         """
         from app.config import settings
+        from app.services.product_inventory import PRODUCT_CONFIGS, ProductInventoryService
 
         # Find account
         account = await self._find_account_by_identity(identity)
@@ -194,6 +195,19 @@ class BillingService:
             else:
                 # Successfully created
                 account = new_account
+
+                # Initialize product inventories (web_search, etc.) with free credits
+                # This ensures tools get free credits the same way LLM usage does
+                product_service = ProductInventoryService(self.session)
+                for product_type in PRODUCT_CONFIGS:
+                    await product_service.get_or_create_inventory(account.id, product_type)
+                await self.session.commit()
+
+                logger.info(
+                    "account_product_inventories_initialized account_id=%s products=%s",
+                    str(account.id),
+                    list(PRODUCT_CONFIGS.keys()),
+                )
 
         # Log credit check for auditing
         await self._log_credit_check(identity, context, account)
@@ -551,7 +565,20 @@ class BillingService:
         if verified_account is None:
             raise WriteVerificationError(f"Account {new_account.id} not found after insert")
 
+        # Initialize product inventories (web_search, etc.) with free credits
+        from app.services.product_inventory import PRODUCT_CONFIGS, ProductInventoryService
+
+        product_service = ProductInventoryService(self.session)
+        for product_type in PRODUCT_CONFIGS:
+            await product_service.get_or_create_inventory(verified_account.id, product_type)
+
         await self.session.commit()
+
+        logger.info(
+            "account_created_with_product_inventories account_id=%s products=%s",
+            str(verified_account.id),
+            list(PRODUCT_CONFIGS.keys()),
+        )
 
         return self._account_to_domain(verified_account)
 
