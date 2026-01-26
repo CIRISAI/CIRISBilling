@@ -203,8 +203,8 @@
                                 <p class="text-gray-600"><span id="user-count">0</span> total users</p>
                             </div>
                             <div class="flex gap-2">
-                                <input type="text" id="user-search" placeholder="Search users..."
-                                       class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                <input type="text" id="user-search" placeholder="Search by email or ID..."
+                                       class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 w-64"
                                        onkeyup="filterUsers()">
                                 <select id="status-filter" class="px-4 py-2 border border-gray-300 rounded-lg" onchange="filterUsers()">
                                     <option value="">All Statuses</option>
@@ -351,6 +351,23 @@
                     <button type="submit" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Create</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- User Detail Modal -->
+    <div id="user-detail-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+        <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 my-8">
+            <div class="flex items-center justify-between p-6 border-b">
+                <h2 class="text-2xl font-bold text-gray-900">User Details</h2>
+                <button onclick="hideUserDetailModal()" class="text-gray-400 hover:text-gray-600">
+                    <i class="fas fa-times text-2xl"></i>
+                </button>
+            </div>
+            <div id="user-detail-content" class="p-6">
+                <div class="flex items-center justify-center py-12">
+                    <div class="loader"></div>
+                </div>
+            </div>
         </div>
     </div>
 
