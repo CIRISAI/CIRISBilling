@@ -178,8 +178,12 @@ class AppleStoreKitProvider:
             storefront_id=data.get("storefrontId", ""),
             app_account_token=data.get("appAccountToken"),
             in_app_ownership_type=data.get("inAppOwnershipType"),
-            expires_date=parse_timestamp(data.get("expiresDate")) if data.get("expiresDate") else None,
-            revocation_date=parse_timestamp(data.get("revocationDate")) if data.get("revocationDate") else None,
+            expires_date=parse_timestamp(data.get("expiresDate"))
+            if data.get("expiresDate")
+            else None,
+            revocation_date=parse_timestamp(data.get("revocationDate"))
+            if data.get("revocationDate")
+            else None,
             revocation_reason=data.get("revocationReason"),
             is_upgraded=data.get("isUpgraded", False),
         )

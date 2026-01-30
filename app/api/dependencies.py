@@ -634,9 +634,7 @@ async def get_user_from_oauth_token(
             try:
                 return await get_user_from_apple_token(credentials, db)
             except HTTPException:
-                _raise_auth_error(
-                    "Invalid OAuth token. Supported providers: Google, Apple"
-                )
+                _raise_auth_error("Invalid OAuth token. Supported providers: Google, Apple")
 
 
 # ============================================================================
