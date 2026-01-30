@@ -262,9 +262,10 @@ async def get_user_from_google_token(
             detail="Server misconfiguration: no Google client IDs configured",
         )
 
-    logger.debug(
+    logger.info(
         "google_token_validation_starting",
         client_ids_count=len(valid_client_ids),
+        token_prefix=token[:30] + "..." if len(token) > 30 else token,
     )
 
     # Try each client ID until one works
@@ -301,6 +302,13 @@ async def get_user_from_google_token(
             expiry = idinfo.get("exp", time.time() + 3600) - 60
             _cleanup_google_token_cache()
             _google_token_cache[token] = (user_id, email, name, expiry)
+
+            logger.info(
+                "google_token_validation_success",
+                external_id=user_id,
+                email=email,
+                oauth_provider="oauth:google",
+            )
 
             return UserIdentity(
                 oauth_provider="oauth:google",
@@ -473,10 +481,11 @@ async def get_user_from_apple_token(
         if not public_key:
             _raise_auth_error(f"Unknown key ID: {kid}")
 
-    logger.debug(
+    logger.info(
         "apple_token_validation_starting",
         bundle_ids_count=len(valid_bundle_ids),
         kid=kid,
+        token_prefix=token[:30] + "..." if len(token) > 30 else token,
     )
 
     # Try each bundle ID until one works
@@ -506,6 +515,13 @@ async def get_user_from_apple_token(
             expiry = payload.get("exp", time.time() + 3600) - 60
             _cleanup_apple_token_cache()
             _apple_token_cache[token] = (user_id, email, name, expiry)
+
+            logger.info(
+                "apple_token_validation_success",
+                external_id=user_id,
+                email=email,
+                oauth_provider="oauth:apple",
+            )
 
             return UserIdentity(
                 oauth_provider="oauth:apple",
@@ -614,25 +630,43 @@ async def get_user_from_oauth_token(
         return cached_apple
 
     # Try to detect token type by decoding without verification
+    issuer = ""
     try:
         unverified = jwt.decode(token, options={"verify_signature": False})
         issuer = unverified.get("iss", "")
-    except Exception:
-        # If we can't decode, try Google first (more common)
-        issuer = ""
+        logger.debug(
+            "oauth_token_issuer_detected",
+            issuer=issuer,
+            token_prefix=token[:20] + "..." if len(token) > 20 else token,
+        )
+    except Exception as e:
+        # If we can't decode, log and try both validators
+        logger.warning(
+            "oauth_token_decode_failed",
+            error=str(e),
+            token_prefix=token[:20] + "..." if len(token) > 20 else token,
+        )
 
     # Route to appropriate validator based on issuer
     if issuer == "https://appleid.apple.com":
+        logger.info("oauth_token_routing_to_apple", issuer=issuer)
         return await get_user_from_apple_token(credentials, db)
     elif issuer in ("accounts.google.com", "https://accounts.google.com"):
+        logger.info("oauth_token_routing_to_google", issuer=issuer)
         return await get_user_from_google_token(credentials, db)
     else:
-        # Unknown issuer - try Google first, then Apple
+        # Unknown issuer - try Apple first for iOS apps, then Google
+        # (Apple tokens are more likely to have non-standard issuers)
+        logger.info("oauth_token_unknown_issuer_trying_both", issuer=issuer)
         try:
-            return await get_user_from_google_token(credentials, db)
+            result = await get_user_from_apple_token(credentials, db)
+            logger.info("oauth_token_validated_as_apple_fallback")
+            return result
         except HTTPException:
             try:
-                return await get_user_from_apple_token(credentials, db)
+                result = await get_user_from_google_token(credentials, db)
+                logger.info("oauth_token_validated_as_google_fallback")
+                return result
             except HTTPException:
                 _raise_auth_error("Invalid OAuth token. Supported providers: Google, Apple")
 
