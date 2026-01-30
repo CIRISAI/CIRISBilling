@@ -10,6 +10,7 @@ https://developer.apple.com/documentation/appstoreserverapi
 import base64
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 import jwt
@@ -105,7 +106,7 @@ class AppleStoreKitProvider:
         method: str,
         endpoint: str,
         **kwargs: object,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         """Make authenticated request to App Store Server API."""
         url = f"{self.config.api_base_url}{endpoint}"
         headers = {
@@ -135,10 +136,10 @@ class AppleStoreKitProvider:
                 )
                 raise PaymentProviderError(f"API error: {response.status_code}")
 
-            result: dict[str, object] = response.json()
+            result: dict[str, Any] = response.json()
             return result
 
-    def _decode_jws(self, signed_data: str) -> dict[str, object]:
+    def _decode_jws(self, signed_data: str) -> dict[str, Any]:
         """
         Decode and verify JWS signed data from Apple.
 
@@ -149,7 +150,7 @@ class AppleStoreKitProvider:
         try:
             # Decode without verification for data extraction
             # (the HTTPS connection to Apple provides integrity)
-            payload: dict[str, object] = jwt.decode(
+            payload: dict[str, Any] = jwt.decode(
                 signed_data,
                 options={"verify_signature": False},
             )
@@ -157,7 +158,7 @@ class AppleStoreKitProvider:
         except jwt.exceptions.DecodeError as e:
             raise PaymentProviderError(f"Invalid JWS data: {e}")
 
-    def _parse_transaction_info(self, data: dict[str, object]) -> AppleTransactionInfo:
+    def _parse_transaction_info(self, data: dict[str, Any]) -> AppleTransactionInfo:
         """Parse transaction info from decoded JWS payload."""
 
         def parse_timestamp(ms: int | None) -> datetime:
