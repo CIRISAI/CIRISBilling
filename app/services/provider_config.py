@@ -74,3 +74,40 @@ class ProviderConfigService:
             "service_account_json": config_data.get("service_account_json", ""),
             "package_name": config_data.get("package_name", ""),
         }
+
+    async def get_apple_storekit_config(self) -> dict[str, str] | None:
+        """
+        Get active Apple StoreKit configuration from database.
+
+        Returns:
+            Dict with key_id, issuer_id, private_key, bundle_id, environment
+            or None if not configured
+        """
+        stmt = select(ProviderConfig).where(
+            ProviderConfig.provider_type == "apple_storekit",
+            ProviderConfig.is_active == True,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        config = result.scalar_one_or_none()
+
+        if config is None:
+            logger.warning("apple_storekit_config_not_found")
+            return None
+
+        config_data = config.config_data
+        logger.info(
+            "apple_storekit_config_loaded",
+            has_key_id=bool(config_data.get("key_id")),
+            has_issuer_id=bool(config_data.get("issuer_id")),
+            has_private_key=bool(config_data.get("private_key")),
+            bundle_id=config_data.get("bundle_id"),
+            environment=config_data.get("environment"),
+        )
+
+        return {
+            "key_id": config_data.get("key_id", ""),
+            "issuer_id": config_data.get("issuer_id", ""),
+            "private_key": config_data.get("private_key", ""),
+            "bundle_id": config_data.get("bundle_id", ""),
+            "environment": config_data.get("environment", "production"),
+        }

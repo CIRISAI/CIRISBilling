@@ -755,3 +755,80 @@ class UserGooglePlayVerifyResponse(BaseModel):
     credits_added: int = Field(0, description="Credits added from this purchase")
     new_balance: int = Field(0, description="New total balance after purchase")
     already_processed: bool = Field(False, description="Whether purchase was already processed")
+
+
+# ============================================================================
+# Apple StoreKit Models
+# ============================================================================
+
+
+class AppleStoreKitVerifyRequest(BaseModel):
+    """POST /v1/billing/apple-storekit/verify request body (service-to-service)."""
+
+    # Account identity (same pattern as other endpoints)
+    oauth_provider: str = Field(..., min_length=1, max_length=255)
+    external_id: str = Field(..., min_length=1, max_length=255)
+    wa_id: str | None = Field(None, max_length=255)
+    tenant_id: str | None = Field(None, max_length=255)
+
+    # Apple StoreKit transaction details
+    transaction_id: str = Field(..., min_length=1, max_length=255)
+
+    # User contact information
+    customer_email: str | None = Field(None, min_length=1, max_length=255)
+    display_name: str | None = Field(None, min_length=1, max_length=255)
+
+    # User metadata
+    user_role: str | None = Field(None, max_length=50)
+    agent_id: str | None = Field(None, max_length=255)
+
+    # Marketing consent
+    marketing_opt_in: bool = Field(default=False)
+    marketing_opt_in_source: str | None = Field(None, max_length=50)
+
+    @field_validator("oauth_provider")
+    @classmethod
+    def validate_oauth_provider(cls, v: str) -> str:
+        """Ensure oauth_provider follows oauth: prefix convention."""
+        if not v.startswith(_OAUTH_PREFIX):
+            raise ValueError(_ERR_OAUTH_PREFIX)
+        return v
+
+
+class AppleStoreKitVerifyResponse(BaseModel):
+    """POST /v1/billing/apple-storekit/verify response."""
+
+    success: bool
+    credits_added: int
+    new_balance: int
+    transaction_id: str | None = None
+    product_id: str | None = None
+    already_processed: bool = False
+
+
+class UserAppleStoreKitVerifyRequest(BaseModel):
+    """
+    POST /v1/user/apple-storekit/verify request body.
+
+    User-facing version - identity comes from JWT token, not from request body.
+    iOS app sends just the transaction ID after successful in-app purchase.
+    """
+
+    transaction_id: str = Field(..., min_length=1, max_length=255)
+
+
+class UserAppleStoreKitVerifyResponse(BaseModel):
+    """
+    POST /v1/user/apple-storekit/verify response.
+
+    Matches pattern for iOS StoreKit integration:
+    - success
+    - credits_added
+    - new_balance
+    - already_processed
+    """
+
+    success: bool = Field(..., description="Whether verification succeeded")
+    credits_added: int = Field(0, description="Credits added from this purchase")
+    new_balance: int = Field(0, description="New total balance after purchase")
+    already_processed: bool = Field(False, description="Whether purchase was already processed")

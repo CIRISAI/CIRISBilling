@@ -16,6 +16,7 @@ from app.api.dependencies import (
     UserIdentity,
     get_api_key_or_jwt,
     get_user_from_google_token,
+    get_user_from_oauth_token,
     require_permission,
 )
 from app.db.session import get_read_db, get_write_db
@@ -31,6 +32,8 @@ from app.exceptions import (
 from app.models.api import (
     AccountResponse,
     AddCreditsRequest,
+    AppleStoreKitVerifyRequest,
+    AppleStoreKitVerifyResponse,
     ChargeMetadata,
     ChargeResponse,
     CreateAccountRequest,
@@ -47,6 +50,8 @@ from app.models.api import (
     PurchaseResponse,
     TransactionItem,
     TransactionListResponse,
+    UserAppleStoreKitVerifyRequest,
+    UserAppleStoreKitVerifyResponse,
     UserGooglePlayVerifyRequest,
     UserGooglePlayVerifyResponse,
 )
@@ -1091,6 +1096,325 @@ async def google_play_webhook(
         return {"status": "error", "message": str(exc)}
 
 
+# =============================================================================
+# Apple StoreKit Endpoints
+# =============================================================================
+
+
+@router.post(
+    "/v1/billing/apple-storekit/verify",
+    response_model=AppleStoreKitVerifyResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def verify_apple_storekit_purchase(
+    request: AppleStoreKitVerifyRequest,
+    db: AsyncSession = Depends(get_write_db),
+    auth: CombinedAuth = Depends(get_api_key_or_jwt),
+) -> AppleStoreKitVerifyResponse:
+    """
+    Verify Apple StoreKit purchase and add credits to account.
+
+    Flow:
+    1. iOS app completes purchase via StoreKit
+    2. App receives transaction ID
+    3. App calls this endpoint with transaction ID
+    4. Backend verifies with App Store Server API
+    5. Backend credits user's account
+
+    Idempotent: Same transaction_id can be called multiple times safely.
+    Only the first call will add credits.
+
+    Auth: API key with billing:write permission OR Bearer {apple_id_token}
+    """
+    # Check permission for API key auth (JWT auth is always allowed for own account)
+    if auth.auth_type == "api_key" and auth.api_key:
+        if _PERM_BILLING_WRITE not in auth.api_key.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing required permission: {_PERM_BILLING_WRITE}",
+            )
+
+    from sqlalchemy import select
+    from structlog import get_logger
+
+    from app.config import settings
+    from app.db.models import AppleStoreKitPurchase
+    from app.exceptions import PaymentProviderError
+    from app.models.apple_storekit import AppleStoreKitConfig
+    from app.services.apple_storekit_products import get_credits_for_product
+    from app.services.apple_storekit_provider import AppleStoreKitProvider
+    from app.services.provider_config import ProviderConfigService
+
+    logger = get_logger(__name__)
+
+    service = BillingService(db)
+
+    # Resolve identity from auth context or request
+    identity = _resolve_identity_from_auth(
+        auth,
+        request.oauth_provider,
+        request.external_id,
+        request.wa_id,
+        request.tenant_id,
+    )
+
+    # Check if purchase already processed (idempotency)
+    existing_stmt = select(AppleStoreKitPurchase).where(
+        AppleStoreKitPurchase.transaction_id == request.transaction_id
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing_purchase = existing_result.scalar_one_or_none()
+
+    if existing_purchase:
+        logger.info(
+            "apple_storekit_purchase_already_processed",
+            transaction_id=existing_purchase.transaction_id,
+            credits_added=existing_purchase.credits_added,
+        )
+        # Get current account balance
+        try:
+            account_data = await service.get_account(identity)
+            balance_after = account_data.paid_credits
+        except AccountNotFoundError:
+            balance_after = existing_purchase.credits_added
+
+        return AppleStoreKitVerifyResponse(
+            success=True,
+            credits_added=existing_purchase.credits_added,
+            new_balance=balance_after,
+            transaction_id=existing_purchase.transaction_id,
+            product_id=existing_purchase.product_id,
+            already_processed=True,
+        )
+
+    # Load Apple StoreKit config - try database first, then env vars
+    config_service = ProviderConfigService(db)
+    apple_config = await config_service.get_apple_storekit_config()
+
+    # Fall back to environment variables if not in database
+    if not apple_config or not apple_config.get("key_id"):
+        if settings.APPLE_STOREKIT_KEY_ID:
+            apple_config = {
+                "key_id": settings.APPLE_STOREKIT_KEY_ID,
+                "issuer_id": settings.APPLE_STOREKIT_ISSUER_ID,
+                "private_key": settings.APPLE_STOREKIT_PRIVATE_KEY,
+                "bundle_id": settings.APPLE_STOREKIT_BUNDLE_ID,
+                "environment": settings.APPLE_STOREKIT_ENVIRONMENT,
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Apple StoreKit provider not configured",
+            )
+
+    try:
+        # Initialize provider
+        storekit_config = AppleStoreKitConfig(
+            key_id=apple_config["key_id"],
+            issuer_id=apple_config["issuer_id"],
+            private_key=apple_config["private_key"],
+            bundle_id=apple_config["bundle_id"],
+            environment=apple_config["environment"],
+        )
+        provider = AppleStoreKitProvider(storekit_config)
+
+        # Verify transaction with App Store Server API
+        transaction = await provider.get_transaction_info(request.transaction_id)
+
+        # Validate transaction
+        if not transaction.is_valid():
+            logger.warning(
+                "apple_storekit_transaction_invalid",
+                transaction_id=transaction.transaction_id,
+                revocation_date=str(transaction.revocation_date),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transaction not valid: revoked or refunded",
+            )
+
+        # Get credits for product
+        try:
+            credits_to_add = get_credits_for_product(transaction.product_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        # Get or create account
+        account_data = await service.get_or_create_account(
+            identity=identity,
+            initial_balance_minor=0,
+            currency="USD",
+            plan_name="free",
+            customer_email=request.customer_email,
+            display_name=request.display_name,
+            marketing_opt_in=request.marketing_opt_in,
+            marketing_opt_in_source=request.marketing_opt_in_source,
+            user_role=request.user_role,
+            agent_id=request.agent_id,
+        )
+
+        # Add credits
+        await service.add_purchased_uses(
+            identity=identity,
+            uses_to_add=credits_to_add,
+            payment_id=transaction.transaction_id,
+            amount_paid_minor=0,  # App Store handles payment
+            is_test=transaction.is_sandbox(),
+        )
+
+        # Get updated account
+        account_data = await service.get_account(identity)
+
+        # Record purchase for idempotency
+        purchase_record = AppleStoreKitPurchase(
+            account_id=account_data.account_id,
+            transaction_id=transaction.transaction_id,
+            original_transaction_id=transaction.original_transaction_id,
+            product_id=transaction.product_id,
+            bundle_id=transaction.bundle_id,
+            purchase_date=transaction.purchase_date,
+            environment=transaction.environment,
+            credits_added=credits_to_add,
+        )
+        db.add(purchase_record)
+        await db.commit()
+
+        logger.info(
+            "apple_storekit_purchase_verified",
+            transaction_id=transaction.transaction_id,
+            product_id=transaction.product_id,
+            credits_added=credits_to_add,
+            account_id=str(account_data.account_id),
+            is_sandbox=transaction.is_sandbox(),
+        )
+
+        return AppleStoreKitVerifyResponse(
+            success=True,
+            credits_added=credits_to_add,
+            new_balance=account_data.paid_credits,
+            transaction_id=transaction.transaction_id,
+            product_id=transaction.product_id,
+            already_processed=False,
+        )
+
+    except PaymentProviderError as exc:
+        logger.error("apple_storekit_verification_failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        logger.exception("apple_storekit_verification_unexpected_error")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Verification failed",
+        ) from exc
+
+
+@router.post("/v1/billing/webhooks/apple-storekit")
+async def apple_storekit_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_write_db),
+) -> dict[str, str]:
+    """
+    Handle Apple App Store Server Notifications V2.
+
+    Apple sends notifications for:
+    - CONSUMPTION_REQUEST: User requested refund
+    - DID_RENEW: Subscription renewed
+    - REFUND: Refund was issued
+    - REVOKE: Access revoked (Family Sharing)
+    - And more...
+
+    This is supplementary to the verify endpoint. The verify endpoint
+    is the primary flow. Webhooks handle edge cases like refunds.
+    """
+    from structlog import get_logger
+
+    from app.config import settings
+    from app.exceptions import WebhookVerificationError
+    from app.models.apple_storekit import AppleStoreKitConfig
+    from app.services.apple_storekit_provider import AppleStoreKitProvider
+    from app.services.provider_config import ProviderConfigService
+
+    logger = get_logger(__name__)
+
+    # Read raw webhook payload
+    payload = await request.body()
+
+    # Load Apple StoreKit config
+    config_service = ProviderConfigService(db)
+    apple_config = await config_service.get_apple_storekit_config()
+
+    # Fall back to environment variables
+    if not apple_config or not apple_config.get("key_id"):
+        if settings.APPLE_STOREKIT_KEY_ID:
+            apple_config = {
+                "key_id": settings.APPLE_STOREKIT_KEY_ID,
+                "issuer_id": settings.APPLE_STOREKIT_ISSUER_ID,
+                "private_key": settings.APPLE_STOREKIT_PRIVATE_KEY,
+                "bundle_id": settings.APPLE_STOREKIT_BUNDLE_ID,
+                "environment": settings.APPLE_STOREKIT_ENVIRONMENT,
+            }
+        else:
+            logger.warning("apple_storekit_webhook_provider_not_configured")
+            return {"status": "ignored", "reason": "provider_not_configured"}
+
+    try:
+        # Initialize provider and verify webhook
+        storekit_config = AppleStoreKitConfig(
+            key_id=apple_config["key_id"],
+            issuer_id=apple_config["issuer_id"],
+            private_key=apple_config["private_key"],
+            bundle_id=apple_config["bundle_id"],
+            environment=apple_config["environment"],
+        )
+        provider = AppleStoreKitProvider(storekit_config)
+        webhook_event = await provider.verify_webhook(payload)
+
+        logger.info(
+            "apple_storekit_webhook_received",
+            notification_type=webhook_event.notification_type,
+            subtype=webhook_event.subtype,
+            transaction_id=webhook_event.transaction_info.transaction_id
+            if webhook_event.transaction_info
+            else None,
+        )
+
+        # Handle refund
+        if webhook_event.is_refund():
+            logger.warning(
+                "apple_storekit_refund_received",
+                transaction_id=webhook_event.transaction_info.transaction_id
+                if webhook_event.transaction_info
+                else None,
+            )
+            # TODO: Implement credit clawback for refunds
+            # For now, log for manual review
+
+        return {"status": "ok", "notification_type": webhook_event.notification_type}
+
+    except WebhookVerificationError as exc:
+        logger.error("apple_storekit_webhook_verification_failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid webhook payload",
+        ) from exc
+
+    except Exception as exc:
+        logger.exception("apple_storekit_webhook_processing_failed")
+        # Return 200 to prevent retries - we'll investigate manually
+        return {"status": "error", "message": str(exc)}
+
+
 @router.get("/v1/billing/transactions", response_model=TransactionListResponse)
 async def list_transactions(
     oauth_provider: str,
@@ -1579,6 +1903,209 @@ async def user_verify_google_play_purchase(
 
     except Exception as exc:
         logger.exception("google_play_verification_unexpected_error")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error",
+        ) from exc
+
+
+@router.post(
+    "/v1/user/apple-storekit/verify",
+    response_model=UserAppleStoreKitVerifyResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def user_verify_apple_storekit_purchase(
+    request: UserAppleStoreKitVerifyRequest,
+    user: UserIdentity = Depends(get_user_from_oauth_token),
+    db: AsyncSession = Depends(get_write_db),
+) -> UserAppleStoreKitVerifyResponse:
+    """
+    Verify an Apple StoreKit purchase and add credits to the authenticated user's account.
+
+    Auth: Bearer {apple_id_token} or Bearer {google_id_token}
+
+    Flow:
+    1. iOS app completes purchase via StoreKit
+    2. App receives transaction ID
+    3. App calls this endpoint with transaction ID + Apple/Google ID token auth
+    4. Backend verifies transaction with App Store Server API
+    5. Backend credits user's account
+
+    Idempotent: Same transaction_id can be called multiple times safely.
+    """
+    from sqlalchemy import select
+    from structlog import get_logger
+
+    from app.config import settings
+    from app.db.models import AppleStoreKitPurchase
+    from app.exceptions import PaymentProviderError
+    from app.models.apple_storekit import AppleStoreKitConfig
+    from app.services.apple_storekit_products import get_credits_for_product
+    from app.services.apple_storekit_provider import AppleStoreKitProvider
+    from app.services.provider_config import ProviderConfigService
+
+    logger = get_logger(__name__)
+
+    service = BillingService(db)
+
+    identity = AccountIdentity(
+        oauth_provider=user.oauth_provider,
+        external_id=user.external_id,
+        wa_id=None,
+        tenant_id=None,
+    )
+
+    # Check if purchase already processed (idempotency)
+    existing_stmt = select(AppleStoreKitPurchase).where(
+        AppleStoreKitPurchase.transaction_id == request.transaction_id
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing_purchase = existing_result.scalar_one_or_none()
+
+    if existing_purchase:
+        logger.info(
+            "apple_storekit_purchase_already_processed",
+            transaction_id=existing_purchase.transaction_id,
+            credits_added=existing_purchase.credits_added,
+        )
+        # Get current account balance
+        try:
+            account_data = await service.get_account(identity)
+            new_balance = account_data.paid_credits + account_data.free_uses_remaining
+        except AccountNotFoundError:
+            new_balance = existing_purchase.credits_added
+
+        return UserAppleStoreKitVerifyResponse(
+            success=True,
+            credits_added=existing_purchase.credits_added,
+            new_balance=new_balance,
+            already_processed=True,
+        )
+
+    # Load Apple StoreKit config - try database first, then env vars
+    config_service = ProviderConfigService(db)
+    apple_config = await config_service.get_apple_storekit_config()
+
+    # Fall back to environment variables if not in database
+    if not apple_config or not apple_config.get("key_id"):
+        if settings.APPLE_STOREKIT_KEY_ID:
+            apple_config = {
+                "key_id": settings.APPLE_STOREKIT_KEY_ID,
+                "issuer_id": settings.APPLE_STOREKIT_ISSUER_ID,
+                "private_key": settings.APPLE_STOREKIT_PRIVATE_KEY,
+                "bundle_id": settings.APPLE_STOREKIT_BUNDLE_ID,
+                "environment": settings.APPLE_STOREKIT_ENVIRONMENT,
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Apple StoreKit provider not configured",
+            )
+
+    try:
+        # Initialize provider
+        storekit_config = AppleStoreKitConfig(
+            key_id=apple_config["key_id"],
+            issuer_id=apple_config["issuer_id"],
+            private_key=apple_config["private_key"],
+            bundle_id=apple_config["bundle_id"],
+            environment=apple_config["environment"],
+        )
+        provider = AppleStoreKitProvider(storekit_config)
+
+        # Verify transaction with App Store Server API
+        transaction = await provider.get_transaction_info(request.transaction_id)
+
+        # Validate transaction
+        if not transaction.is_valid():
+            logger.warning(
+                "apple_storekit_transaction_invalid",
+                transaction_id=transaction.transaction_id,
+            )
+            return UserAppleStoreKitVerifyResponse(
+                success=False,
+                credits_added=0,
+                new_balance=0,
+                already_processed=False,
+            )
+
+        # Get credits for product
+        try:
+            credits_to_add = get_credits_for_product(transaction.product_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        # Get or create account
+        account_data = await service.get_or_create_account(
+            identity=identity,
+            initial_balance_minor=0,
+            currency="USD",
+            plan_name="free",
+            customer_email=user.email,
+            display_name=user.name,
+        )
+
+        # Add credits
+        await service.add_purchased_uses(
+            identity=identity,
+            uses_to_add=credits_to_add,
+            payment_id=transaction.transaction_id,
+            amount_paid_minor=0,  # App Store handles payment
+            is_test=transaction.is_sandbox(),
+        )
+
+        # Get updated account
+        account_data = await service.get_account(identity)
+        new_balance = account_data.paid_credits + account_data.free_uses_remaining
+
+        # Record purchase for idempotency
+        purchase_record = AppleStoreKitPurchase(
+            account_id=account_data.account_id,
+            transaction_id=transaction.transaction_id,
+            original_transaction_id=transaction.original_transaction_id,
+            product_id=transaction.product_id,
+            bundle_id=transaction.bundle_id,
+            purchase_date=transaction.purchase_date,
+            environment=transaction.environment,
+            credits_added=credits_to_add,
+        )
+        db.add(purchase_record)
+        await db.commit()
+
+        logger.info(
+            "apple_storekit_purchase_verified",
+            transaction_id=transaction.transaction_id,
+            product_id=transaction.product_id,
+            credits_added=credits_to_add,
+            account_id=str(account_data.account_id),
+            is_sandbox=transaction.is_sandbox(),
+        )
+
+        return UserAppleStoreKitVerifyResponse(
+            success=True,
+            credits_added=credits_to_add,
+            new_balance=new_balance,
+            already_processed=False,
+        )
+
+    except PaymentProviderError as exc:
+        logger.error("apple_storekit_verification_failed", error=str(exc))
+        return UserAppleStoreKitVerifyResponse(
+            success=False,
+            credits_added=0,
+            new_balance=0,
+            already_processed=False,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        logger.exception("apple_storekit_verification_unexpected_error")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

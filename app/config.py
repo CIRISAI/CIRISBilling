@@ -55,6 +55,31 @@ class Settings(BaseSettings):
     CIRIS_TEST_AUTH_TOKEN: str = ""
     CIRIS_TEST_USER_ID: str = "test-user-automated"
 
+    # Apple Sign-In Configuration
+    APPLE_CLIENT_ID: str = ""  # iOS app bundle ID (e.g., com.ciris.agent)
+    APPLE_CLIENT_IDS: str = ""  # Comma-separated list of valid bundle IDs
+    APPLE_TEAM_ID: str = ""  # Apple Developer Team ID
+
+    # Apple StoreKit (App Store Server API)
+    APPLE_STOREKIT_KEY_ID: str = ""  # Key ID from App Store Connect
+    APPLE_STOREKIT_ISSUER_ID: str = ""  # Issuer ID from App Store Connect
+    APPLE_STOREKIT_PRIVATE_KEY: str = ""  # Private key (.p8 file contents, base64 encoded)
+    APPLE_STOREKIT_BUNDLE_ID: str = ""  # Bundle ID for purchase validation
+    APPLE_STOREKIT_ENVIRONMENT: str = "production"  # "production" or "sandbox"
+
+    @property
+    def valid_apple_client_ids(self) -> list[str]:
+        """Get list of valid Apple bundle IDs for token validation."""
+        ids = []
+        if self.APPLE_CLIENT_ID:
+            ids.append(self.APPLE_CLIENT_ID)
+        if self.APPLE_CLIENT_IDS:
+            for cid in self.APPLE_CLIENT_IDS.split(","):
+                cid = cid.strip()
+                if cid and cid not in ids:
+                    ids.append(cid)
+        return ids
+
     @property
     def valid_google_client_ids(self) -> list[str]:
         """Get list of valid Google client IDs for token validation."""

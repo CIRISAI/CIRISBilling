@@ -497,7 +497,7 @@ class ProviderConfig(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "provider_type IN ('stripe', 'google_play', 'square', 'paypal')",
+            "provider_type IN ('stripe', 'google_play', 'apple_storekit', 'square', 'paypal')",
             name="ck_provider_configs_type",
         ),
     )
@@ -615,6 +615,62 @@ class GooglePlayPurchase(Base):
         """String representation for debugging."""
         return (
             f"<GooglePlayPurchase(id={self.id}, order_id={self.order_id}, "
+            f"product_id={self.product_id}, credits={self.credits_added})>"
+        )
+
+
+class AppleStoreKitPurchase(Base):
+    """
+    ORM model for apple_storekit_purchases table.
+
+    Tracks Apple App Store In-App Purchases for idempotency.
+    """
+
+    __tablename__ = "apple_storekit_purchases"
+
+    # Primary Key
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    # Foreign Key to Account
+    account_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(_FK_ACCOUNTS_ID, ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Apple StoreKit fields
+    transaction_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    original_transaction_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    product_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    bundle_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    purchase_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    environment: Mapped[str] = mapped_column(String(50), nullable=False)  # Production/Sandbox
+
+    # Credit tracking
+    credits_added: Mapped[int] = mapped_column(Integer, nullable=False)
+    credit_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("credits.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        Index("idx_apple_storekit_purchases_transaction_id", "transaction_id", unique=True),
+        Index("idx_apple_storekit_purchases_original_tx_id", "original_transaction_id"),
+        Index("idx_apple_storekit_purchases_account_id", "account_id"),
+    )
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        return (
+            f"<AppleStoreKitPurchase(id={self.id}, transaction_id={self.transaction_id}, "
             f"product_id={self.product_id}, credits={self.credits_added})>"
         )
 

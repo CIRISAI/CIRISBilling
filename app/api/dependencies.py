@@ -25,7 +25,11 @@ from app.services.token_revocation import token_revocation_service
 __all__ = [
     "APIKeyData",
     "get_validated_identity",
+    "get_user_from_apple_token",
+    "get_user_from_google_token",
+    "get_user_from_oauth_token",
     "require_permission",
+    "UserIdentity",
 ]
 
 logger = get_logger(__name__)
@@ -50,6 +54,12 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 # Cache for verified Google ID tokens: token -> (user_id, email, name, expiry_timestamp)
 _google_token_cache: dict[str, tuple[str, str | None, str | None, float]] = {}
+# Cache for verified Apple ID tokens: token -> (user_id, email, name, expiry_timestamp)
+_apple_token_cache: dict[str, tuple[str, str | None, str | None, float]] = {}
+# Cache for Apple's public keys: kid -> RSA public key
+_apple_public_keys: dict[str, object] = {}
+_apple_keys_fetched_at: float = 0
+_APPLE_KEYS_CACHE_TTL = 3600  # Refresh keys every hour
 _MAX_CACHE_SIZE = 10000
 
 
@@ -65,6 +75,84 @@ def _cleanup_google_token_cache() -> None:
     expired = [k for k, (_, _, _, exp) in _google_token_cache.items() if exp < now]
     for k in expired:
         del _google_token_cache[k]
+
+
+def _cleanup_apple_token_cache() -> None:
+    """Remove expired entries from the Apple token cache."""
+    import time
+
+    if len(_apple_token_cache) < _MAX_CACHE_SIZE:
+        return
+
+    now = time.time()
+    expired = [k for k, (_, _, _, exp) in _apple_token_cache.items() if exp < now]
+    for k in expired:
+        del _apple_token_cache[k]
+
+
+async def _fetch_apple_public_keys() -> None:
+    """Fetch and cache Apple's public keys for JWT verification."""
+    import time
+
+    import httpx
+
+    global _apple_keys_fetched_at
+
+    now = time.time()
+    if _apple_public_keys and (now - _apple_keys_fetched_at) < _APPLE_KEYS_CACHE_TTL:
+        return  # Keys are still fresh
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://appleid.apple.com/auth/keys",
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            keys_data = response.json()
+
+        # Import cryptography for key parsing
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from jwt import algorithms
+
+        # Parse JWK keys into RSA public keys
+        _apple_public_keys.clear()
+        for key_dict in keys_data.get("keys", []):
+            kid = key_dict.get("kid")
+            if kid:
+                # Convert JWK to RSA public key
+                public_key = algorithms.RSAAlgorithm.from_jwk(key_dict)
+                _apple_public_keys[kid] = public_key
+
+        _apple_keys_fetched_at = now
+        logger.info("apple_public_keys_fetched", key_count=len(_apple_public_keys))
+
+    except Exception as e:
+        logger.error("apple_public_keys_fetch_failed", error=str(e))
+        # Don't clear existing keys on error - use stale keys if available
+        if not _apple_public_keys:
+            raise
+
+
+def _get_cached_apple_user(token: str) -> UserIdentity | None:
+    """Check cache for a valid Apple token. Returns UserIdentity if cached and not expired."""
+    import time
+
+    if token not in _apple_token_cache:
+        return None
+
+    user_id, email, name, expiry = _apple_token_cache[token]
+    if time.time() < expiry:
+        return UserIdentity(
+            oauth_provider="oauth:apple",
+            external_id=user_id,
+            email=email,
+            name=name,
+        )
+
+    # Token expired, remove from cache
+    del _apple_token_cache[token]
+    return None
 
 
 def _get_cached_user(token: str) -> UserIdentity | None:
@@ -273,6 +361,283 @@ async def get_optional_user_from_google_token(
         return await get_user_from_google_token(credentials, db)
     except HTTPException:
         return None
+
+
+# ============================================================================
+# Apple Sign-In Authentication (for iOS clients)
+# ============================================================================
+
+
+async def get_user_from_apple_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_write_db),
+) -> UserIdentity:
+    """
+    FastAPI dependency to validate Apple ID token from Authorization header.
+
+    Accepts: Authorization: Bearer {apple_id_token}
+    Verifies: Token signature against Apple's public keys
+    Extracts: User's Apple ID (sub claim) for billing
+
+    Apple Sign-In uses JWT tokens signed with RS256. The token includes:
+    - iss: https://appleid.apple.com
+    - aud: Your app's bundle ID
+    - sub: Unique user identifier (stable across devices)
+    - email: User's email (may be hidden/relay address)
+
+    Returns:
+        UserIdentity if valid Apple ID token
+
+    Raises:
+        HTTPException 401 if no token or invalid token
+    """
+    import time
+
+    import jwt
+
+    if credentials is None:
+        _raise_auth_error("Authorization header required")
+
+    token = credentials.credentials
+
+    # Test token authentication (for automated testing only)
+    if settings.CIRIS_TEST_AUTH_ENABLED and settings.CIRIS_TEST_AUTH_TOKEN:
+        if secrets.compare_digest(token, settings.CIRIS_TEST_AUTH_TOKEN):
+            test_user_id = settings.CIRIS_TEST_USER_ID or "test-user-automated"
+            logger.warning(
+                "test_token_auth_used",
+                external_id=test_user_id,
+                oauth_provider="oauth:test",
+            )
+            return UserIdentity(
+                oauth_provider="oauth:test",
+                external_id=test_user_id,
+                email=f"{test_user_id}@test.ciris.ai",
+                name="Automated Test User",
+            )
+
+    # SECURITY: Check if token has been revoked
+    if await token_revocation_service.is_revoked(token, db):
+        _raise_auth_error("Token has been revoked")
+
+    # Check cache first (avoids network call to Apple)
+    cached_user = _get_cached_apple_user(token)
+    if cached_user:
+        return cached_user
+
+    # Get valid bundle IDs
+    valid_bundle_ids = settings.valid_apple_client_ids
+    if not valid_bundle_ids:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server misconfiguration: no Apple client IDs configured",
+        )
+
+    # Fetch Apple's public keys (cached)
+    try:
+        await _fetch_apple_public_keys()
+    except Exception as e:
+        logger.error("apple_keys_fetch_error", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch Apple public keys",
+        )
+
+    if not _apple_public_keys:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No Apple public keys available",
+        )
+
+    # Decode JWT header to get key ID (kid)
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+        kid = unverified_header.get("kid")
+    except jwt.exceptions.DecodeError as e:
+        _raise_auth_error(f"Invalid token format: {e}")
+
+    if not kid:
+        _raise_auth_error("Token missing key ID (kid)")
+
+    # Find matching public key
+    public_key = _apple_public_keys.get(kid)
+    if not public_key:
+        # Keys might have rotated, try refreshing
+        global _apple_keys_fetched_at
+        _apple_keys_fetched_at = 0  # Force refresh
+        try:
+            await _fetch_apple_public_keys()
+            public_key = _apple_public_keys.get(kid)
+        except Exception:
+            pass
+
+        if not public_key:
+            _raise_auth_error(f"Unknown key ID: {kid}")
+
+    logger.debug(
+        "apple_token_validation_starting",
+        bundle_ids_count=len(valid_bundle_ids),
+        kid=kid,
+    )
+
+    # Try each bundle ID until one works
+    last_error = None
+    for bundle_id in valid_bundle_ids:
+        try:
+            # Verify and decode the token
+            payload = jwt.decode(
+                token,
+                public_key,
+                algorithms=["RS256"],
+                audience=bundle_id,
+                issuer="https://appleid.apple.com",
+            )
+
+            # Extract user info
+            user_id = payload.get("sub")
+            email = payload.get("email")
+            # Apple doesn't provide name in JWT - only in initial auth response
+            # The name would need to be stored/retrieved from the account record
+            name = None
+
+            if not user_id:
+                _raise_auth_error("Invalid token: missing user ID (sub)")
+
+            # Cache the verified token until it expires (with 60s buffer)
+            expiry = payload.get("exp", time.time() + 3600) - 60
+            _cleanup_apple_token_cache()
+            _apple_token_cache[token] = (user_id, email, name, expiry)
+
+            return UserIdentity(
+                oauth_provider="oauth:apple",
+                external_id=user_id,
+                email=email,
+                name=name,
+            )
+
+        except jwt.exceptions.InvalidAudienceError:
+            last_error = f"Invalid audience for bundle ID {bundle_id[:20]}..."
+            continue
+        except jwt.exceptions.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "error": "token_expired",
+                    "message": "Your session has expired. Please sign in again.",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except jwt.exceptions.InvalidTokenError as e:
+            last_error = str(e)
+            break
+
+    # All bundle IDs failed
+    logger.warning(
+        "apple_token_validation_failed",
+        error=last_error,
+    )
+    _raise_auth_error(f"Invalid Apple ID token: {last_error}")
+
+
+async def get_optional_user_from_apple_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_write_db),
+) -> UserIdentity | None:
+    """
+    Optional Apple ID token authentication - returns None if no token provided.
+
+    Useful for endpoints that can work with or without auth.
+    """
+    if credentials is None:
+        return None
+
+    try:
+        return await get_user_from_apple_token(credentials, db)
+    except HTTPException:
+        return None
+
+
+# ============================================================================
+# Unified OAuth Token Authentication (Google or Apple)
+# ============================================================================
+
+
+async def get_user_from_oauth_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_write_db),
+) -> UserIdentity:
+    """
+    Unified OAuth token authentication - accepts Google or Apple ID tokens.
+
+    The token type is auto-detected based on:
+    - JWT issuer claim (Google vs Apple)
+    - Token structure
+
+    This allows iOS clients to use Apple Sign-In and Android clients
+    to use Google Sign-In with the same endpoint.
+
+    Returns:
+        UserIdentity from either Google or Apple token
+
+    Raises:
+        HTTPException 401 if no token or invalid token
+    """
+    import jwt
+
+    if credentials is None:
+        _raise_auth_error("Authorization header required")
+
+    token = credentials.credentials
+
+    # Test token authentication (for automated testing only)
+    if settings.CIRIS_TEST_AUTH_ENABLED and settings.CIRIS_TEST_AUTH_TOKEN:
+        if secrets.compare_digest(token, settings.CIRIS_TEST_AUTH_TOKEN):
+            test_user_id = settings.CIRIS_TEST_USER_ID or "test-user-automated"
+            logger.warning(
+                "test_token_auth_used",
+                external_id=test_user_id,
+                oauth_provider="oauth:test",
+            )
+            return UserIdentity(
+                oauth_provider="oauth:test",
+                external_id=test_user_id,
+                email=f"{test_user_id}@test.ciris.ai",
+                name="Automated Test User",
+            )
+
+    # Check caches first
+    cached_google = _get_cached_user(token)
+    if cached_google:
+        return cached_google
+
+    cached_apple = _get_cached_apple_user(token)
+    if cached_apple:
+        return cached_apple
+
+    # Try to detect token type by decoding without verification
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        issuer = unverified.get("iss", "")
+    except Exception:
+        # If we can't decode, try Google first (more common)
+        issuer = ""
+
+    # Route to appropriate validator based on issuer
+    if issuer == "https://appleid.apple.com":
+        return await get_user_from_apple_token(credentials, db)
+    elif issuer in ("accounts.google.com", "https://accounts.google.com"):
+        return await get_user_from_google_token(credentials, db)
+    else:
+        # Unknown issuer - try Google first, then Apple
+        try:
+            return await get_user_from_google_token(credentials, db)
+        except HTTPException:
+            try:
+                return await get_user_from_apple_token(credentials, db)
+            except HTTPException:
+                _raise_auth_error(
+                    "Invalid OAuth token. Supported providers: Google, Apple"
+                )
 
 
 # ============================================================================
