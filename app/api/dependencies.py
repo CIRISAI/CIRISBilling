@@ -111,8 +111,7 @@ async def _fetch_apple_public_keys() -> None:
             response.raise_for_status()
             keys_data = response.json()
 
-        # Import cryptography for key parsing
-        from cryptography.hazmat.primitives.asymmetric import rsa
+        # Import jwt algorithms for JWK parsing
         from jwt import algorithms
 
         # Parse JWK keys into RSA public keys

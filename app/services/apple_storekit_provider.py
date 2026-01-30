@@ -9,7 +9,7 @@ https://developer.apple.com/documentation/appstoreserverapi
 
 import base64
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import jwt
@@ -161,8 +161,8 @@ class AppleStoreKitProvider:
 
         def parse_timestamp(ms: int | None) -> datetime:
             if ms is None:
-                return datetime.now(timezone.utc)
-            return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+                return datetime.now(UTC)
+            return datetime.fromtimestamp(ms / 1000, tz=UTC)
 
         return AppleTransactionInfo(
             transaction_id=data["transactionId"],
@@ -347,7 +347,7 @@ class AppleStoreKitProvider:
 
             # Parse signed date
             signed_date_ms = notification.get("signedDate", 0)
-            signed_date = datetime.fromtimestamp(signed_date_ms / 1000, tz=timezone.utc)
+            signed_date = datetime.fromtimestamp(signed_date_ms / 1000, tz=UTC)
 
             event = AppleStoreKitWebhookEvent(
                 notification_type=notification.get("notificationType", ""),
