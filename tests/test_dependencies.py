@@ -439,7 +439,7 @@ class TestGetApiKeyOrJwt:
             name="Test User",
         )
 
-        with patch("app.api.dependencies.get_user_from_google_token") as mock_get_user:
+        with patch("app.api.dependencies.get_user_from_oauth_token") as mock_get_user:
             mock_get_user.return_value = user
 
             result = await get_api_key_or_jwt(
@@ -574,7 +574,7 @@ class TestGetValidatedIdentity:
             email="test@example.com",
         )
 
-        with patch("app.api.dependencies.get_user_from_google_token") as mock_get_user:
+        with patch("app.api.dependencies.get_user_from_oauth_token") as mock_get_user:
             mock_get_user.return_value = user
 
             result = await get_validated_identity(credentials, db_session)
