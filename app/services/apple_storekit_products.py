@@ -30,18 +30,18 @@ class AppleStoreKitProduct:
 # Product IDs typically follow reverse-domain format: com.company.app.product
 # Pricing: $0.10 per credit
 APPLE_STOREKIT_PRODUCTS: dict[str, AppleStoreKitProduct] = {
-    "ai.ciris.mobile.credits_100": AppleStoreKitProduct(
-        product_id="ai.ciris.mobile.credits_100",
+    "ai.ciris.mobile.credits_100_v1": AppleStoreKitProduct(
+        product_id="ai.ciris.mobile.credits_100_v1",
         credits=100,
         name="100 Credits",  # $9.99
     ),
-    "ai.ciris.mobile.credits_250": AppleStoreKitProduct(
-        product_id="ai.ciris.mobile.credits_250",
+    "ai.ciris.mobile.credits_250_v1": AppleStoreKitProduct(
+        product_id="ai.ciris.mobile.credits_250_v1",
         credits=250,
         name="250 Credits",  # $24.99
     ),
-    "ai.ciris.mobile.credits_600": AppleStoreKitProduct(
-        product_id="ai.ciris.mobile.credits_600",
+    "ai.ciris.mobile.credits_600_v1": AppleStoreKitProduct(
+        product_id="ai.ciris.mobile.credits_600_v1",
         credits=600,
         name="600 Credits",  # $59.99
     ),

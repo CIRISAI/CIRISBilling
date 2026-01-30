@@ -28,9 +28,9 @@ The integration supports:
 
 | Product ID | Credits | Price | Description |
 |------------|---------|-------|-------------|
-| `ai.ciris.mobile.credits_100` | 100 | $9.99 | 100 Credits |
-| `ai.ciris.mobile.credits_250` | 250 | $24.99 | 250 Credits |
-| `ai.ciris.mobile.credits_600` | 600 | $59.99 | 600 Credits |
+| `ai.ciris.mobile.credits_100_v1` | 100 | $9.99 | 100 Credits |
+| `ai.ciris.mobile.credits_250_v1` | 250 | $24.99 | 250 Credits |
+| `ai.ciris.mobile.credits_600_v1` | 600 | $59.99 | 600 Credits |
 
 Pricing: **$0.10 per credit**
 
@@ -256,7 +256,7 @@ POST /inApps/v1/notifications/test
 | `Apple StoreKit provider not configured` | Missing env vars | Set all `APPLE_STOREKIT_*` variables |
 | `Transaction not found` | Invalid transaction ID | Verify the transaction ID is correct |
 | `Invalid API credentials` | Wrong key/issuer | Check Key ID and Issuer ID |
-| `Unknown product ID` | Product not in catalog | Add product to `apple_storekit_products.py` |
+| `Unknown product ID` | Product not in catalog | Add product to `apple_storekit_products.py` (note: products use `_v1` suffix) |
 
 ### Logs
 
