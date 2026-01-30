@@ -486,7 +486,7 @@ async def get_user_from_apple_token(
             # Verify and decode the token
             payload = jwt.decode(
                 token,
-                public_key,
+                public_key,  # type: ignore[arg-type]  # RSA key stored as object
                 algorithms=["RS256"],
                 audience=bundle_id,
                 issuer="https://appleid.apple.com",

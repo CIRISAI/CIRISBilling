@@ -105,7 +105,7 @@ class AppleStoreKitProvider:
         method: str,
         endpoint: str,
         **kwargs: object,
-    ) -> dict:
+    ) -> dict[str, object]:
         """Make authenticated request to App Store Server API."""
         url = f"{self.config.api_base_url}{endpoint}"
         headers = {
@@ -135,9 +135,10 @@ class AppleStoreKitProvider:
                 )
                 raise PaymentProviderError(f"API error: {response.status_code}")
 
-            return response.json()
+            result: dict[str, object] = response.json()
+            return result
 
-    def _decode_jws(self, signed_data: str) -> dict:
+    def _decode_jws(self, signed_data: str) -> dict[str, object]:
         """
         Decode and verify JWS signed data from Apple.
 
@@ -148,7 +149,7 @@ class AppleStoreKitProvider:
         try:
             # Decode without verification for data extraction
             # (the HTTPS connection to Apple provides integrity)
-            payload = jwt.decode(
+            payload: dict[str, object] = jwt.decode(
                 signed_data,
                 options={"verify_signature": False},
             )
@@ -156,7 +157,7 @@ class AppleStoreKitProvider:
         except jwt.exceptions.DecodeError as e:
             raise PaymentProviderError(f"Invalid JWS data: {e}")
 
-    def _parse_transaction_info(self, data: dict) -> AppleTransactionInfo:
+    def _parse_transaction_info(self, data: dict[str, object]) -> AppleTransactionInfo:
         """Parse transaction info from decoded JWS payload."""
 
         def parse_timestamp(ms: int | None) -> datetime:
@@ -400,7 +401,7 @@ class AppleStoreKitProvider:
                 "/inApps/v1/notifications/test",
             )
 
-            token = result.get("testNotificationToken", "")
+            token = str(result.get("testNotificationToken", ""))
             logger.info(
                 "apple_test_notification_requested",
                 token=token[:20] + "..." if token else "",
