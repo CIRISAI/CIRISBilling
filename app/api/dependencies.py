@@ -766,15 +766,15 @@ async def get_api_key_or_jwt(
                 headers={"WWW-Authenticate": "ApiKey"},
             ) from exc
 
-    # Try JWT (user direct access)
+    # Try JWT (user direct access) - supports both Google and Apple tokens
     if credentials:
-        user = await get_user_from_google_token(credentials, db)
+        user = await get_user_from_oauth_token(credentials, db)
         return CombinedAuth(auth_type="jwt", user=user)
 
     # Neither provided
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required. Provide X-API-Key header or Authorization: Bearer {google_id_token}",
+        detail="Authentication required. Provide X-API-Key header or Authorization: Bearer {oauth_id_token}",
         headers={"WWW-Authenticate": "Bearer, ApiKey"},
     )
 
@@ -818,15 +818,17 @@ async def get_validated_identity(
 
     Used by tool endpoints that require user authentication.
     Returns AccountIdentity directly, suitable for ProductInventoryService.
+    Supports both Google and Apple ID tokens.
     """
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Provide Authorization: Bearer {google_id_token}",
+            detail="Authentication required. Provide Authorization: Bearer {oauth_id_token}",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = await get_user_from_google_token(credentials, db)
+    # Use unified OAuth validation (supports Google and Apple)
+    user = await get_user_from_oauth_token(credentials, db)
 
     return AccountIdentity(
         oauth_provider=user.oauth_provider,
