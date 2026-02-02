@@ -65,7 +65,7 @@ router = APIRouter()
 _PERM_BILLING_READ = "billing:read"
 _PERM_BILLING_WRITE = "billing:write"
 _ERR_ACCOUNT_NOT_FOUND = "Account not found"
-_DEFAULT_PACKAGE_NAME = "ai.ciris.agent"
+_DEFAULT_PACKAGE_NAME = "ai.ciris.mobile"
 
 
 def _resolve_identity_from_auth(

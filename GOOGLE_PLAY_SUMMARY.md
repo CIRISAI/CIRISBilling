@@ -61,7 +61,7 @@ Clean, minimal implementation following existing Stripe patterns.
      "external_id": "user_123",
      "purchase_token": "...",
      "product_id": "credits_100",
-     "package_name": "ai.ciris.agent"
+     "package_name": "ai.ciris.mobile"
    }
 4. Backend → Verify with Google Play API
 5. Backend → Check idempotency (unique purchase_token)
@@ -110,7 +110,7 @@ CREATE INDEX idx_google_play_purchases_account_id ON google_play_purchases(accou
    INSERT INTO provider_configs (provider_type, is_active, config_data)
    VALUES ('google_play', true, '{
      "service_account_json": "/path/to/service-account.json",
-     "package_name": "ai.ciris.agent"
+     "package_name": "ai.ciris.mobile"
    }');
    ```
 3. [ ] Configure Google Play Console products (credits_100, credits_250, credits_600)
