@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first for layer caching
 COPY requirements.txt .
 
+# Cache bust arg - changes when requirements.txt changes
+ARG CACHEBUST=1
+
 # Build wheels for all dependencies
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
