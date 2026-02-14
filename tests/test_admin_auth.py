@@ -490,7 +490,7 @@ class TestAdminAuthRoutes:
 
         result = await logout(response=response)
 
-        response.delete_cookie.assert_called_once_with(key="admin_token")
+        response.delete_cookie.assert_called_once_with(key="admin_token", path="/")
         assert result["message"] == "Logged out successfully"
 
     @pytest.mark.asyncio
