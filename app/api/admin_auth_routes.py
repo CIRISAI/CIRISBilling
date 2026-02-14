@@ -142,6 +142,7 @@ async def google_callback(
             secure=True,  # HTTPS only
             samesite="lax",
             max_age=86400,  # 24 hours
+            path="/",  # Cookie must be sent for all paths, not just /admin/oauth/
         )
 
         return response_redirect
@@ -172,7 +173,7 @@ async def logout(response: Response) -> dict[str, str]:
     Returns:
         Success message
     """
-    response.delete_cookie(key="admin_token")
+    response.delete_cookie(key="admin_token", path="/")
 
     logger.info("admin_user_logout")
 
