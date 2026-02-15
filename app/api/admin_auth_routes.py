@@ -145,6 +145,15 @@ async def google_callback(
             path="/",  # Cookie must be sent for all paths, not just /admin/oauth/
         )
 
+        logger.info(
+            "oauth_callback_cookie_set",
+            redirect_uri=redirect_uri,
+            token_preview=access_token[:20] + "...",
+            cookie_path="/",
+            secure=True,
+            samesite="lax",
+        )
+
         return response_redirect
 
     except ValueError as e:

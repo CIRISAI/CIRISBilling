@@ -242,6 +242,9 @@ async def admin_login_page() -> Response:
 @app.get("/admin-ui/{path:path}")
 async def admin_ui_protected(path: str, request: Request) -> Response:
     """Serve admin UI files - HTML requires authentication, static assets are public."""
+    from structlog import get_logger
+    logger = get_logger(__name__)
+
     # Serve the requested file
     if not path or path == "":
         path = "index.html"
@@ -276,6 +279,14 @@ async def admin_ui_protected(path: str, request: Request) -> Response:
     # Static assets need to load for the login page to work
     if suffix == ".html" and path != "login.html":
         token = request.cookies.get("admin_token")
+        all_cookies = dict(request.cookies)
+        logger.info(
+            "admin_ui_auth_check",
+            path=path,
+            has_token=bool(token),
+            cookie_keys=list(all_cookies.keys()),
+            token_preview=token[:20] + "..." if token and len(token) > 20 else token,
+        )
         if not token:
             return RedirectResponse(url="/admin-ui/login.html", status_code=302)
 
