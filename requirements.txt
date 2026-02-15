@@ -1,6 +1,7 @@
 # setuptools required for pkg_resources (used by OpenTelemetry)
 # Not bundled in Python 3.12+ by default
-setuptools>=68.0
+# Pin to <81 as newer versions may have removed/changed pkg_resources
+setuptools>=68.0,<81
 
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
