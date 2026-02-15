@@ -243,6 +243,7 @@ async def admin_login_page() -> Response:
 async def admin_ui_protected(path: str, request: Request) -> Response:
     """Serve admin UI files - HTML requires authentication, static assets are public."""
     from structlog import get_logger
+
     logger = get_logger(__name__)
 
     # Serve the requested file
