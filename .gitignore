@@ -60,6 +60,9 @@ docker-compose.override.yml
 secrets/
 secrets-backup/
 *.backup-*
+storekit_setup/
+.env.storekit
+*.p8
 
 # OS
 .DS_Store

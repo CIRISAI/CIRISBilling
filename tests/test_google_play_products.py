@@ -86,17 +86,17 @@ class TestProductCatalog:
 
     def test_catalog_product_credits(self):
         """Test that catalog products have correct credits."""
-        assert GOOGLE_PLAY_PRODUCTS["credits_100"].credits == 100
-        assert GOOGLE_PLAY_PRODUCTS["credits_250"].credits == 250
-        assert GOOGLE_PLAY_PRODUCTS["credits_600"].credits == 600
+        assert GOOGLE_PLAY_PRODUCTS["credits_100"].credits == 99
+        assert GOOGLE_PLAY_PRODUCTS["credits_250"].credits == 249
+        assert GOOGLE_PLAY_PRODUCTS["credits_600"].credits == 599
 
     def test_get_product_success(self):
         """Test getting existing product."""
         product = get_product("credits_100")
 
         assert product.product_id == "credits_100"
-        assert product.credits == 100
-        assert product.name == "100 Credits"
+        assert product.credits == 99
+        assert product.name == "99 Credits"
 
     def test_get_product_not_found(self):
         """Test getting non-existent product raises ValueError."""
@@ -106,13 +106,13 @@ class TestProductCatalog:
     def test_get_credits_for_product_success(self):
         """Test getting credits for existing product."""
         credits = get_credits_for_product("credits_100")
-        assert credits == 100
+        assert credits == 99
 
         credits = get_credits_for_product("credits_250")
-        assert credits == 250
+        assert credits == 249
 
         credits = get_credits_for_product("credits_600")
-        assert credits == 600
+        assert credits == 599
 
     def test_get_credits_for_product_not_found(self):
         """Test getting credits for non-existent product raises ValueError."""

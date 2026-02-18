@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     # Web Search (Brave API)
     product_web_search_free_initial: int = 10  # Free searches on account creation
     product_web_search_free_daily: int = 3  # Free searches refreshed daily
-    product_web_search_price_minor: int = 10  # 10 cents ($0.10) per search - standard pricing
+    product_web_search_price_minor: int = 1  # 1 cent per search
 
     # Future products can be added here:
     # product_image_gen_free_initial: int = 5
