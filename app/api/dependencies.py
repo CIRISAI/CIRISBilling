@@ -481,17 +481,29 @@ async def get_user_from_apple_token(
         if not public_key:
             _raise_auth_error(f"Unknown key ID: {kid}")
 
+    # Log available keys for debugging
+    available_kids = list(_apple_public_keys.keys())
     logger.info(
         "apple_token_validation_starting",
         bundle_ids_count=len(valid_bundle_ids),
+        bundle_ids=valid_bundle_ids,
         kid=kid,
+        available_kids=available_kids,
+        kid_found=kid in available_kids,
         token_prefix=token[:30] + "..." if len(token) > 30 else token,
     )
 
     # Try each bundle ID until one works
     last_error = None
+    tried_bundle_ids: list[str] = []
     for bundle_id in valid_bundle_ids:
+        tried_bundle_ids.append(bundle_id)
         try:
+            logger.debug(
+                "apple_token_trying_bundle_id",
+                bundle_id=bundle_id,
+                kid=kid,
+            )
             # Verify and decode the token
             payload = jwt.decode(
                 token,
@@ -530,10 +542,20 @@ async def get_user_from_apple_token(
                 name=name,
             )
 
-        except jwt.exceptions.InvalidAudienceError:
-            last_error = f"Invalid audience for bundle ID {bundle_id[:20]}..."
+        except jwt.exceptions.InvalidAudienceError as e:
+            last_error = f"Invalid audience for bundle ID {bundle_id}"
+            logger.debug(
+                "apple_token_audience_mismatch",
+                bundle_id=bundle_id,
+                error=str(e),
+            )
             continue
-        except jwt.exceptions.ExpiredSignatureError:
+        except jwt.exceptions.ExpiredSignatureError as e:
+            logger.warning(
+                "apple_token_expired",
+                kid=kid,
+                error=str(e),
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={
@@ -542,13 +564,41 @@ async def get_user_from_apple_token(
                 },
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        except jwt.exceptions.InvalidSignatureError as e:
+            last_error = f"Signature verification failed: {e}"
+            logger.warning(
+                "apple_token_signature_invalid",
+                kid=kid,
+                bundle_id=bundle_id,
+                error=str(e),
+            )
+            break
         except jwt.exceptions.InvalidTokenError as e:
             last_error = str(e)
+            logger.warning(
+                "apple_token_invalid",
+                kid=kid,
+                bundle_id=bundle_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            break
+        except Exception as e:
+            last_error = f"Unexpected error: {type(e).__name__}: {e}"
+            logger.error(
+                "apple_token_unexpected_error",
+                kid=kid,
+                bundle_id=bundle_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
             break
 
     # All bundle IDs failed
     logger.warning(
         "apple_token_validation_failed",
+        kid=kid,
+        tried_bundle_ids=tried_bundle_ids,
         error=last_error,
     )
     _raise_auth_error(f"Invalid Apple ID token: {last_error}")
