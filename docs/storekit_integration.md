@@ -28,11 +28,11 @@ The integration supports:
 
 | Product ID | Credits | Price | Description |
 |------------|---------|-------|-------------|
-| `ai.ciris.mobile.credits_100_v1` | 100 | $9.99 | 100 Credits |
-| `ai.ciris.mobile.credits_250_v1` | 250 | $24.99 | 250 Credits |
-| `ai.ciris.mobile.credits_600_v1` | 600 | $59.99 | 600 Credits |
+| `ai.ciris.mobile.credits_100_v1` | 99 | $9.99 | 99 Credits |
+| `ai.ciris.mobile.credits_250_v1` | 249 | $24.99 | 249 Credits |
+| `ai.ciris.mobile.credits_600_v1` | 599 | $59.99 | 599 Credits |
 
-Pricing: **$0.10 per credit**
+Pricing: **Exactly $0.10 per credit** (no volume discounts)
 
 ## Setup
 

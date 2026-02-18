@@ -39,9 +39,10 @@ Clean, minimal implementation following existing Stripe patterns.
   - `verify_webhook()` - Parse Real-Time Developer Notifications
 
 - **`app/services/google_play_products.py`** - Product catalog
-  - `credits_100` → 100 credits
-  - `credits_250` → 250 credits
-  - `credits_600` → 600 credits
+  - `credits_100` → 99 credits ($9.99 @ $0.10/credit)
+  - `credits_250` → 249 credits ($24.99 @ $0.10/credit)
+  - `credits_600` → 599 credits ($59.99 @ $0.10/credit)
+  - Pricing: Exactly $0.10 per credit with no volume discounts
 
 - **`app/services/provider_config.py`** - Added `get_google_play_config()`
 

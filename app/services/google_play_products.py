@@ -26,21 +26,23 @@ class GooglePlayProduct:
 
 
 # Product catalog (must match Google Play Console configuration)
+# Pricing: Exactly $0.10 per credit with NO volume discounts
+# Credits = floor(price / $0.10) to ensure users always pay at least $0.10/credit
 GOOGLE_PLAY_PRODUCTS: dict[str, GooglePlayProduct] = {
     "credits_100": GooglePlayProduct(
         product_id="credits_100",
-        credits=100,
-        name="100 Credits",
+        credits=99,  # $9.99 / $0.10 = 99 credits (no discount)
+        name="99 Credits",
     ),
     "credits_250": GooglePlayProduct(
         product_id="credits_250",
-        credits=250,
-        name="250 Credits",
+        credits=249,  # $24.99 / $0.10 = 249 credits (no discount)
+        name="249 Credits",
     ),
     "credits_600": GooglePlayProduct(
         product_id="credits_600",
-        credits=600,
-        name="600 Credits",
+        credits=599,  # $59.99 / $0.10 = 599 credits (no discount)
+        name="599 Credits",
     ),
 }
 
