@@ -18,6 +18,7 @@ from app.api.dependencies import (
     get_user_from_google_token,
     get_user_from_oauth_token,
     require_permission,
+    require_permission_or_jwt,
 )
 from app.db.session import get_read_db, get_write_db
 from app.exceptions import (
@@ -173,22 +174,36 @@ async def check_credit(
 async def create_charge(
     request: CreateChargeRequest,
     db: AsyncSession = Depends(get_write_db),
-    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
+    auth: CombinedAuth = Depends(require_permission_or_jwt(_PERM_BILLING_WRITE)),
 ) -> ChargeResponse:
     """
     Create a charge (deduct credits from account).
 
     Write operation - requires primary database.
-    Requires: API key with billing:write permission.
+
+    Auth: API key with billing:write permission OR Bearer {oauth_id_token}
+
+    When using JWT auth, oauth_provider and external_id are extracted from the token,
+    ensuring users can only charge their own account.
     """
     service = BillingService(db)
 
-    identity = AccountIdentity(
-        oauth_provider=request.oauth_provider,
-        external_id=request.external_id,
-        wa_id=request.wa_id,
-        tenant_id=request.tenant_id,
-    )
+    # If JWT auth, use identity from token (users can only charge their own account)
+    # If API key auth, use identity from request body
+    if auth.auth_type == "jwt" and auth.user:
+        identity = AccountIdentity(
+            oauth_provider=auth.user.oauth_provider,
+            external_id=auth.user.external_id,
+            wa_id=request.wa_id,
+            tenant_id=request.tenant_id,
+        )
+    else:
+        identity = AccountIdentity(
+            oauth_provider=request.oauth_provider,
+            external_id=request.external_id,
+            wa_id=request.wa_id,
+            tenant_id=request.tenant_id,
+        )
 
     # Update account metadata on every charge request
     await service.update_account_metadata(
