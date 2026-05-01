@@ -66,12 +66,6 @@ class Settings(BaseSettings):
     APPLE_STOREKIT_PRIVATE_KEY: str = ""  # Private key (.p8 file contents, base64 encoded)
     APPLE_STOREKIT_BUNDLE_ID: str = ""  # Bundle ID for purchase validation
     APPLE_STOREKIT_ENVIRONMENT: str = "production"  # "production" or "sandbox"
-    # When True, inbound App Store Server Notifications JWS payloads are
-    # verified against Apple's certificate chain (rooted at Apple Root CA - G3).
-    # When False, JWS is decoded without signature verification — only safe for
-    # outbound App Store Server API responses received over HTTPS-to-Apple,
-    # NEVER for inbound webhook payloads. See docs/THREAT_MODEL.md AV-4.
-    APPLE_WEBHOOK_VERIFY_JWS: bool = True
 
     # Google Pub/Sub Push (Google Play webhook delivery)
     # The Pub/Sub push subscription should be configured with OIDC authentication;

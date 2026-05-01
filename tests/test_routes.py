@@ -1231,6 +1231,124 @@ class TestIntegrityRoutes:
 # ============================================================================
 
 
+class TestGooglePubSubOIDC:
+    """Tests for AV-5: Google Pub/Sub webhook must verify OIDC token."""
+
+    def _request(self, headers: dict) -> MagicMock:
+        from fastapi import Request
+
+        request = MagicMock(spec=Request)
+        request.headers = headers
+        request.body = AsyncMock(return_value=b"{}")
+        return request
+
+    @pytest.mark.asyncio
+    async def test_missing_authorization_header_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={})
+        with patch("app.config.settings") as mock_settings:
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "Missing OIDC token" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_invalid_oidc_token_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer bad.token.here"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token", side_effect=ValueError("bad sig")
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = "https://billing.example/webhook"
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "Invalid OIDC token" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_wrong_issuer_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer good.token"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={
+                "iss": "https://malicious.example",
+                "email_verified": True,
+                "email": "x@example.com",
+            },
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = ""
+            mock_settings.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL = ""
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "issuer" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_email_unverified_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer good.token"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={
+                "iss": "https://accounts.google.com",
+                "email_verified": False,
+                "email": "x@example.com",
+            },
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = ""
+            mock_settings.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL = ""
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "email not verified" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_wrong_publisher_email_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer good.token"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={
+                "iss": "https://accounts.google.com",
+                "email_verified": True,
+                "email": "imposter@evil.iam.gserviceaccount.com",
+            },
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = ""
+            mock_settings.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL = (
+                "expected@trusted.iam.gserviceaccount.com"
+            )
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 403
+            assert "unauthorized publisher" in exc_info.value.detail
+
+
 class TestStripeWebhookBinding:
     """Tests for the AV-3 fix: webhooks must resolve account from server-side row."""
 

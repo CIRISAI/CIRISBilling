@@ -126,3 +126,69 @@ def test_rejects_malformed_x5c():
     token = f"{head_b64}.{payload_b64}.{sig_b64}"
     with pytest.raises(WebhookVerificationError, match="x5c"):
         _verify_apple_jws(token)
+
+
+def test_happy_path_with_pinned_root(monkeypatch):
+    """A correctly-signed chain whose root matches the pinned fingerprint verifies.
+
+    We can't sign with Apple's actual private key, so we generate our own chain
+    and patch the trusted root fingerprint to match it. This exercises the
+    signature-verification + chain-link logic; it does NOT validate that we
+    correctly bind to Apple's specific cert (that's pinned by constant).
+    """
+    leaf_key, chain = _make_self_signed_chain()
+    # Patch the pinned root to match our test root's fingerprint.
+    test_root_fp = chain[-1].fingerprint(hashes.SHA256())
+    monkeypatch.setattr(
+        "app.services.apple_storekit_provider.APPLE_ROOT_CA_G3_SHA256",
+        test_root_fp,
+    )
+
+    payload = {"transactionId": "test-tx", "productId": "test-product"}
+    token = _sign_jws_with_chain(payload, leaf_key, chain)
+
+    result = _verify_apple_jws(token)
+    assert result["transactionId"] == "test-tx"
+    assert result["productId"] == "test-product"
+
+
+def test_rejects_tampered_payload(monkeypatch):
+    """A JWS whose body is replaced after signing must fail verification."""
+    leaf_key, chain = _make_self_signed_chain()
+    test_root_fp = chain[-1].fingerprint(hashes.SHA256())
+    monkeypatch.setattr(
+        "app.services.apple_storekit_provider.APPLE_ROOT_CA_G3_SHA256",
+        test_root_fp,
+    )
+
+    # Sign a real payload, then swap the middle (payload) segment.
+    token = _sign_jws_with_chain({"orig": True}, leaf_key, chain)
+    head, _, sig = token.split(".")
+    tampered_payload = base64.urlsafe_b64encode(b'{"orig":false}').rstrip(b"=").decode()
+    tampered = f"{head}.{tampered_payload}.{sig}"
+
+    with pytest.raises(WebhookVerificationError, match="signature"):
+        _verify_apple_jws(tampered)
+
+
+def test_rejects_chain_link_mismatch(monkeypatch):
+    """A chain whose leaf is not signed by the next cert must be rejected."""
+    # Build two independent self-signed chains. Use leaf from chain A,
+    # but include root from chain B in the chain.
+    leaf_key_a, chain_a = _make_self_signed_chain()
+    _, chain_b = _make_self_signed_chain()
+
+    # Point the pin at chain B's root so root pinning passes;
+    # the issuer-of-leaf check is what should fail.
+    test_root_fp = chain_b[-1].fingerprint(hashes.SHA256())
+    monkeypatch.setattr(
+        "app.services.apple_storekit_provider.APPLE_ROOT_CA_G3_SHA256",
+        test_root_fp,
+    )
+
+    # x5c = [leaf_A, root_B] — leaf is NOT signed by root_B.
+    mixed_chain = [chain_a[0], chain_b[-1]]
+    token = _sign_jws_with_chain({"foo": "bar"}, leaf_key_a, mixed_chain)
+
+    with pytest.raises(WebhookVerificationError, match="Chain link"):
+        _verify_apple_jws(token)

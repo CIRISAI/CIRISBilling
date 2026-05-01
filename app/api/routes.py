@@ -1532,15 +1532,7 @@ async def apple_storekit_webhook(
             environment=apple_config["environment"],
         )
         provider = AppleStoreKitProvider(storekit_config)
-        webhook_event = await provider.verify_webhook(
-            payload,
-            verify_jws=settings.APPLE_WEBHOOK_VERIFY_JWS,
-        )
-        if not settings.APPLE_WEBHOOK_VERIFY_JWS:
-            logger.warning(
-                "apple_storekit_webhook_jws_unverified",
-                hint="set APPLE_WEBHOOK_VERIFY_JWS=true to enable chain validation",
-            )
+        webhook_event = await provider.verify_webhook(payload)
 
         logger.info(
             "apple_storekit_webhook_received",

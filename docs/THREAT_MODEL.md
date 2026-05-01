@@ -566,7 +566,7 @@ Risks CIRISBilling mitigates but cannot fully eliminate:
 ```
 v0.1.1 STATUS — wave 1-4 cleanup landed (2026-05-01)
   ✓ AV-3  Stripe metadata trust                     (closed — stripe_payment_intents table is authoritative)
-  ✓ AV-4  Apple StoreKit JWS not verified           (closed — APPLE_WEBHOOK_VERIFY_JWS, x5c chain pinned to Apple Root CA - G3)
+  ✓ AV-4  Apple StoreKit JWS not verified           (closed — `_decode_jws` always validates x5c chain pinned to Apple Root CA - G3, both inbound webhooks and outbound API responses)
   ✓ AV-5  Google Play webhook app-layer unsigned    (closed — GOOGLE_PUBSUB_VERIFY_OIDC validates Pub/Sub Bearer token)
   ✓ AV-12 ADMIN_JWT_SECRET length validator         (closed — startup config validator)
   ✓ AV-13 OAuth admin token in URL query string     (closed — redirect drops `?token=`)
