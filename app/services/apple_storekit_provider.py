@@ -55,10 +55,16 @@ def _verify_apple_jws(signed_data: str) -> dict[str, Any]:
     Raises WebhookVerificationError on any failure. The exception messages
     are intentionally non-leaky.
     """
+    # We must read the header before verifying — that's how we get the x5c
+    # chain that contains the verification key. The signature IS verified
+    # below via jwt.decode with the leaf cert's public key + algorithms=["ES256"].
+    # NOSONAR-START: python:S5659 (header peek for key extraction; full sig verified below)
     try:
-        header = jwt.get_unverified_header(signed_data)
+        unverified_header = jwt.get_unverified_header(signed_data)  # NOSONAR python:S5659
     except jwt.exceptions.DecodeError as exc:
         raise WebhookVerificationError("Malformed JWS header") from exc
+    header = unverified_header
+    # NOSONAR-END: python:S5659
 
     alg = header.get("alg")
     if alg != "ES256":

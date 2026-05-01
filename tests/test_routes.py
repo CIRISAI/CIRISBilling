@@ -1323,6 +1323,31 @@ class TestGooglePubSubOIDC:
             assert "email not verified" in exc_info.value.detail
 
     @pytest.mark.asyncio
+    async def test_oidc_disabled_skips_validation(self):
+        """When GOOGLE_PUBSUB_VERIFY_OIDC=False, the webhook accepts unsigned requests.
+
+        This is the deployment-edge-delegation path. We log a loud warning so
+        misconfiguration is visible.
+        """
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={})
+        db = AsyncMock()
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "app.services.provider_config.ProviderConfigService"
+        ) as mock_config_cls:
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = False
+            mock_config_cls.return_value.get_google_play_config = AsyncMock(
+                return_value=None
+            )
+
+            result = await google_play_webhook(request=request, db=db)
+
+            # No exception; webhook accepted (and ignored due to no provider config).
+            assert result["status"] == "ignored"
+
+    @pytest.mark.asyncio
     async def test_wrong_publisher_email_rejected(self):
         from fastapi import HTTPException
 
@@ -1469,6 +1494,59 @@ class TestStripeWebhookBinding:
 
             assert exc_info.value.status_code == 400
             assert "amount mismatch" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_webhook_happy_path_credits_bound_account(self):
+        """A first-time webhook for a known PaymentIntent credits the bound account."""
+        from fastapi import Request
+
+        from app.api.routes import stripe_webhook
+
+        webhook_event = self._make_event("pi_first")
+        binding = self._make_binding("pi_first", status_str="created")
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=lambda: binding)
+        )
+        db.commit = AsyncMock()
+
+        request = MagicMock(spec=Request)
+        request.body = AsyncMock(return_value=b"{}")
+        request.headers = {"stripe-signature": "sig"}
+
+        with patch(
+            "app.services.provider_config.ProviderConfigService"
+        ) as mock_config_cls, patch(
+            "app.services.stripe_provider.StripeProvider"
+        ) as mock_provider_cls, patch(
+            "app.api.routes.BillingService"
+        ) as mock_billing_cls:
+            mock_config_cls.return_value.get_stripe_config = AsyncMock(
+                return_value={
+                    "api_key": "sk_test",
+                    "webhook_secret": "whsec_test",
+                    "publishable_key": "pk_test",
+                }
+            )
+            mock_provider = mock_provider_cls.return_value
+            mock_provider.verify_webhook = AsyncMock(return_value=webhook_event)
+            mock_provider.confirm_payment = AsyncMock(return_value=True)
+
+            mock_billing = mock_billing_cls.return_value
+            mock_billing.add_purchased_uses = AsyncMock()
+
+            result = await stripe_webhook(request=request, db=db)
+
+            assert result["status"] == "success"
+            mock_billing.add_purchased_uses.assert_awaited_once()
+            # Account identity must come from binding, not metadata.
+            kwargs = mock_billing.add_purchased_uses.call_args.kwargs
+            assert kwargs["identity"].external_id == "honest-user-id"
+            assert kwargs["identity"].external_id != "attacker-external-id"
+            # Binding flipped to "credited"
+            assert binding.status == "credited"
+            assert binding.credited_at is not None
 
     @pytest.mark.asyncio
     async def test_webhook_already_credited_returns_idempotent(self):
