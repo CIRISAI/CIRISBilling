@@ -66,6 +66,20 @@ class Settings(BaseSettings):
     APPLE_STOREKIT_PRIVATE_KEY: str = ""  # Private key (.p8 file contents, base64 encoded)
     APPLE_STOREKIT_BUNDLE_ID: str = ""  # Bundle ID for purchase validation
     APPLE_STOREKIT_ENVIRONMENT: str = "production"  # "production" or "sandbox"
+    # When True, inbound App Store Server Notifications JWS payloads are
+    # verified against Apple's certificate chain (rooted at Apple Root CA - G3).
+    # When False, JWS is decoded without signature verification — only safe for
+    # outbound App Store Server API responses received over HTTPS-to-Apple,
+    # NEVER for inbound webhook payloads. See docs/THREAT_MODEL.md AV-4.
+    APPLE_WEBHOOK_VERIFY_JWS: bool = True
+
+    # Google Pub/Sub Push (Google Play webhook delivery)
+    # The Pub/Sub push subscription should be configured with OIDC authentication;
+    # the Authorization header is verified to be signed by Google for these claims.
+    # See docs/THREAT_MODEL.md AV-5.
+    GOOGLE_PUBSUB_AUDIENCE: str = ""  # Expected `aud` claim (typically the webhook URL)
+    GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL: str = ""  # Expected publisher service account
+    GOOGLE_PUBSUB_VERIFY_OIDC: bool = True  # Set False only with explicit edge enforcement
 
     @property
     def valid_apple_client_ids(self) -> list[str]:
@@ -174,6 +188,17 @@ class Settings(BaseSettings):
             if len(self.CIRIS_TEST_AUTH_TOKEN) < 64:
                 errors.append(
                     "CIRIS_TEST_AUTH_TOKEN must be at least 64 characters when test auth is enabled"
+                )
+
+        # Admin JWT secret must be sufficiently long in production.
+        # 32 bytes (64 hex chars) is the recommended minimum for HS256.
+        if self.environment.lower() == "production":
+            if not self.ADMIN_JWT_SECRET:
+                errors.append("ADMIN_JWT_SECRET is required in production")
+            elif len(self.ADMIN_JWT_SECRET) < 32:
+                errors.append(
+                    "ADMIN_JWT_SECRET must be at least 32 characters in production "
+                    "(generate with: openssl rand -hex 32)"
                 )
 
         # If we have errors, fail immediately with clear messaging

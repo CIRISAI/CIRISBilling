@@ -4,7 +4,7 @@ API Routes - FastAPI endpoints for billing operations.
 NO DICTIONARIES - All requests/responses use Pydantic models.
 """
 
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -451,6 +451,26 @@ async def create_purchase(
     try:
         payment_result = await stripe_provider.create_payment_intent(payment_intent)
 
+        # Persist the authoritative account binding for this PaymentIntent.
+        # The webhook handler resolves the credited account from this row —
+        # NOT from PaymentIntent metadata, which a merchant-side caller can
+        # set freely. See docs/THREAT_MODEL.md AV-3.
+        from app.db.models import StripePaymentIntent
+
+        db.add(
+            StripePaymentIntent(
+                payment_intent_id=payment_result.payment_id,
+                account_id=account_data.account_id,
+                oauth_provider=request.oauth_provider,
+                external_id=request.external_id,
+                amount_minor=payment_result.amount_minor,
+                currency=payment_result.currency,
+                uses_purchased=settings.paid_uses_per_purchase,
+                status="created",
+            )
+        )
+        await db.commit()
+
         return PurchaseResponse(
             payment_id=payment_result.payment_id,
             client_secret=payment_result.client_secret,
@@ -682,7 +702,6 @@ async def stripe_webhook(
     """
     from structlog import get_logger
 
-    from app.config import settings
     from app.exceptions import WebhookVerificationError
     from app.services.provider_config import ProviderConfigService
     from app.services.stripe_provider import StripeProvider
@@ -721,45 +740,100 @@ async def stripe_webhook(
 
         # Handle payment success
         if webhook_event.event_type == "payment_intent.succeeded":
-            # Extract account info from metadata
-            if (
-                not webhook_event.metadata_account_id
-                or not webhook_event.metadata_oauth_provider
-                or not webhook_event.metadata_external_id
-            ):
-                logger.error("stripe_webhook_missing_metadata", event_id=webhook_event.event_id)
+            # AUTHORITATIVE BINDING: resolve the credited account from our
+            # server-side row, NOT from webhook metadata. See AV-3.
+            from sqlalchemy import select
+
+            from app.db.models import StripePaymentIntent
+
+            binding_stmt = select(StripePaymentIntent).where(
+                StripePaymentIntent.payment_intent_id == webhook_event.payment_id
+            )
+            binding_result = await db.execute(binding_stmt)
+            binding = binding_result.scalar_one_or_none()
+
+            if binding is None:
+                # No server-side row → this PaymentIntent was not created by
+                # us, OR the row was lost. Either way, refuse to credit.
+                logger.error(
+                    "stripe_webhook_unknown_payment_intent",
+                    event_id=webhook_event.event_id,
+                    payment_id=webhook_event.payment_id,
+                    metadata_account_id=webhook_event.metadata_account_id,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Missing account metadata in webhook",
+                    detail="Unknown PaymentIntent — no server-side binding",
                 )
+
+            # Cross-check the webhook against the binding. Mismatched amount
+            # or currency signals tampering or merchant-side error; refuse.
+            if (
+                webhook_event.amount_minor is not None
+                and webhook_event.amount_minor != binding.amount_minor
+            ):
+                logger.error(
+                    "stripe_webhook_amount_mismatch",
+                    payment_id=webhook_event.payment_id,
+                    bound_amount=binding.amount_minor,
+                    webhook_amount=webhook_event.amount_minor,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="PaymentIntent amount mismatch",
+                )
+            if (
+                webhook_event.currency
+                and webhook_event.currency.upper() != binding.currency.upper()
+            ):
+                logger.error(
+                    "stripe_webhook_currency_mismatch",
+                    payment_id=webhook_event.payment_id,
+                    bound_currency=binding.currency,
+                    webhook_currency=webhook_event.currency,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="PaymentIntent currency mismatch",
+                )
+
+            # Idempotency: if already credited, acknowledge without re-credit.
+            if binding.status == "credited":
+                logger.info(
+                    "stripe_webhook_already_credited",
+                    payment_id=webhook_event.payment_id,
+                )
+                return {"status": "already_credited", "event_id": webhook_event.event_id}
 
             # Confirm payment with Stripe
             payment_succeeded = await stripe_provider.confirm_payment(webhook_event.payment_id)
 
             if payment_succeeded:
-                # Reconstruct account identity from metadata
                 identity = AccountIdentity(
-                    oauth_provider=webhook_event.metadata_oauth_provider,
-                    external_id=webhook_event.metadata_external_id,
+                    oauth_provider=binding.oauth_provider,
+                    external_id=binding.external_id,
                     wa_id=None,
                     tenant_id=None,
                 )
 
-                # Add purchased uses to account
                 service = BillingService(db)
                 try:
                     await service.add_purchased_uses(
                         identity=identity,
-                        uses_to_add=settings.paid_uses_per_purchase,
+                        uses_to_add=binding.uses_purchased,
                         payment_id=webhook_event.payment_id,
-                        amount_paid_minor=webhook_event.amount_minor
-                        or settings.price_per_purchase_minor,
+                        amount_paid_minor=binding.amount_minor,
                     )
+
+                    binding.status = "credited"
+                    binding.credited_at = datetime.now(UTC)
+                    await db.commit()
+
                     logger.info(
                         "stripe_payment_credited",
                         payment_id=webhook_event.payment_id,
-                        account_id=webhook_event.metadata_account_id,
-                        uses_added=settings.paid_uses_per_purchase,
+                        account_id=str(binding.account_id),
+                        uses_added=binding.uses_purchased,
                     )
                 except Exception as e:
                     logger.error(
@@ -767,8 +841,8 @@ async def stripe_webhook(
                         payment_id=webhook_event.payment_id,
                         error=str(e),
                     )
-                    # Don't raise - we confirmed the payment succeeded
-                    # The user will need manual credit adjustment
+                    # Don't raise - we confirmed the payment succeeded.
+                    # The binding stays in "created" state; ops can replay.
 
             return {"status": "success", "event_id": webhook_event.event_id}
 
@@ -796,6 +870,10 @@ async def stripe_webhook(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid webhook signature",
         ) from exc
+
+    except HTTPException:
+        # Preserve our explicit 400/403 responses raised above.
+        raise
 
     except Exception as exc:
         logger.error("stripe_webhook_processing_failed", error=str(exc))
@@ -1054,11 +1132,72 @@ async def google_play_webhook(
     """
     from structlog import get_logger
 
+    from app.config import settings
     from app.exceptions import WebhookVerificationError
     from app.services.google_play_provider import GooglePlayProvider
     from app.services.provider_config import ProviderConfigService
 
     logger = get_logger(__name__)
+
+    # Verify Pub/Sub OIDC token before reading the body. See AV-5.
+    # The Pub/Sub push subscription must be configured with OIDC auth so
+    # Google attaches a signed Bearer token to every push.
+    if settings.GOOGLE_PUBSUB_VERIFY_OIDC:
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            logger.warning("google_pubsub_missing_oidc_token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing OIDC token",
+            )
+
+        oidc_token = auth_header.removeprefix("Bearer ").strip()
+        try:
+            from google.auth.transport import requests as g_requests
+            from google.oauth2 import id_token as g_id_token
+
+            claims = g_id_token.verify_oauth2_token(  # type: ignore[no-untyped-call]
+                oidc_token,
+                g_requests.Request(),  # type: ignore[no-untyped-call]
+                audience=settings.GOOGLE_PUBSUB_AUDIENCE or None,
+            )
+        except ValueError as exc:
+            logger.warning("google_pubsub_oidc_invalid", error=str(exc))
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid OIDC token",
+            ) from exc
+
+        if claims.get("iss") not in (
+            "accounts.google.com",
+            "https://accounts.google.com",
+        ):
+            logger.warning("google_pubsub_oidc_bad_issuer", iss=claims.get("iss"))
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="OIDC token issued by unexpected issuer",
+            )
+        if not claims.get("email_verified", False):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="OIDC token email not verified",
+            )
+
+        expected_email = settings.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL
+        if expected_email and claims.get("email") != expected_email:
+            logger.warning(
+                "google_pubsub_oidc_wrong_publisher",
+                email=claims.get("email"),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="OIDC token from unauthorized publisher",
+            )
+    else:
+        logger.warning(
+            "google_pubsub_oidc_disabled",
+            hint="set GOOGLE_PUBSUB_VERIFY_OIDC=true to enable",
+        )
 
     # Read raw webhook payload
     payload = await request.body()
@@ -1393,7 +1532,15 @@ async def apple_storekit_webhook(
             environment=apple_config["environment"],
         )
         provider = AppleStoreKitProvider(storekit_config)
-        webhook_event = await provider.verify_webhook(payload)
+        webhook_event = await provider.verify_webhook(
+            payload,
+            verify_jws=settings.APPLE_WEBHOOK_VERIFY_JWS,
+        )
+        if not settings.APPLE_WEBHOOK_VERIFY_JWS:
+            logger.warning(
+                "apple_storekit_webhook_jws_unverified",
+                hint="set APPLE_WEBHOOK_VERIFY_JWS=true to enable chain validation",
+            )
 
         logger.info(
             "apple_storekit_webhook_received",
@@ -1566,30 +1713,6 @@ async def list_transactions(
 #   - Auth check: POST /v1/billing/credits/check (supports API key or JWT)
 #   - Charge: POST /v1/billing/charges (API key required)
 # The /v1/billing/litellm/usage endpoint remains for LLM cost analytics.
-
-
-@router.post(
-    "/v1/billing/litellm/usage/debug",
-    status_code=status.HTTP_200_OK,
-)
-async def litellm_log_usage_debug(
-    request: Request,
-    api_key: APIKeyData = Depends(require_permission(_PERM_BILLING_WRITE)),
-) -> dict[str, Any]:
-    """Debug endpoint to capture raw request body."""
-    from structlog import get_logger
-
-    logger = get_logger(__name__)
-    body = await request.body()
-    try:
-        import json
-
-        parsed = json.loads(body)
-        logger.info("usage_debug_received", body=parsed)
-        return {"received": parsed, "body_length": len(body)}
-    except Exception as e:
-        logger.error("usage_debug_parse_error", error=str(e), raw_body=body.decode()[:500])
-        return {"error": str(e), "raw_body": body.decode()[:500]}
 
 
 @router.post(
