@@ -245,6 +245,72 @@ class TestAPIKeyServiceValidation:
         session.commit.assert_called()
 
     @pytest.mark.asyncio
+    async def test_rotating_key_within_grace_period_succeeds(self):
+        """A rotating key with future grace_period_until validates successfully."""
+        session = AsyncMock()
+
+        hasher = PasswordHasher()
+        test_key = "cbk_live_rotating123456789"
+        test_hash = hasher.hash(test_key)
+        grace_until = datetime.now(UTC) + timedelta(hours=12)
+
+        mock_key = MagicMock(spec=APIKey)
+        mock_key.id = uuid4()
+        mock_key.key_hash = test_hash
+        mock_key.key_prefix = test_key[:20]
+        mock_key.name = "Rotating Key"
+        mock_key.environment = "live"
+        mock_key.permissions = ["billing:read"]
+        mock_key.status = "rotating"
+        mock_key.created_at = datetime.now(UTC)
+        mock_key.expires_at = None
+        mock_key.last_used_at = None
+        mock_key.key_metadata = {"grace_period_until": grace_until.isoformat()}
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none = MagicMock(return_value=mock_key)
+        session.execute = AsyncMock(return_value=mock_result)
+        session.commit = AsyncMock()
+
+        service = APIKeyService(session)
+        result = await service.validate_api_key(test_key)
+
+        assert result.status == "rotating"
+        assert mock_key.status == "rotating"  # Not auto-revoked
+
+    @pytest.mark.asyncio
+    async def test_rotating_key_past_grace_period_revoked(self):
+        """A rotating key past its grace period is auto-revoked and rejected."""
+        session = AsyncMock()
+
+        hasher = PasswordHasher()
+        test_key = "cbk_live_expiredgrace1234"
+        test_hash = hasher.hash(test_key)
+        grace_until = datetime.now(UTC) - timedelta(hours=1)  # Past
+
+        mock_key = MagicMock(spec=APIKey)
+        mock_key.id = uuid4()
+        mock_key.key_hash = test_hash
+        mock_key.key_prefix = test_key[:20]
+        mock_key.status = "rotating"
+        mock_key.expires_at = None
+        mock_key.key_metadata = {"grace_period_until": grace_until.isoformat()}
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none = MagicMock(return_value=mock_key)
+        session.execute = AsyncMock(return_value=mock_result)
+        session.commit = AsyncMock()
+
+        service = APIKeyService(session)
+
+        with pytest.raises(AuthenticationError) as exc:
+            await service.validate_api_key(test_key)
+
+        assert "grace period expired" in str(exc.value)
+        assert mock_key.status == "revoked"
+        session.commit.assert_called()
+
+    @pytest.mark.asyncio
     async def test_valid_key_returns_data(self):
         """Valid keys return APIKeyData."""
         session = AsyncMock()

@@ -9,15 +9,21 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import jwt
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 
-from app.db.models import AdminUser
-from app.models.domain import OAuthSession, OAuthToken, OAuthUser
+from app.db.models import AdminOAuthSession, AdminUser
+from app.models.domain import OAuthToken, OAuthUser
 from app.services.google_oauth import GoogleOAuthProvider
 
 logger = get_logger(__name__)
+
+# OAuth state expires 10 minutes after issuance.
+# Google's authorization-code flow typically completes within a minute;
+# 10 minutes leaves headroom for slow networks while keeping the row
+# count bounded under attack.
+_OAUTH_STATE_TTL = timedelta(minutes=10)
 
 
 class AdminAuthService:
@@ -32,30 +38,39 @@ class AdminAuthService:
         self.oauth_provider = oauth_provider
         self.jwt_secret = jwt_secret
         self.jwt_expire_hours = jwt_expire_hours
-        self._sessions: dict[str, OAuthSession] = {}  # In-memory session store
 
-    async def initiate_oauth_flow(self, redirect_uri: str, callback_url: str) -> tuple[str, str]:
+    async def initiate_oauth_flow(
+        self, redirect_uri: str, callback_url: str, db: AsyncSession
+    ) -> tuple[str, str]:
         """
         Initiate OAuth flow.
+
+        Persists state in `admin_oauth_sessions` so the callback can land
+        on any worker. Rows expire after 10 minutes.
 
         Returns:
             (state, auth_url) tuple
         """
         state = secrets.token_urlsafe(32)
-        session = OAuthSession(
-            redirect_uri=redirect_uri,
-            callback_url=callback_url,
-            created_at=datetime.now(UTC).isoformat(),
-        )
+        now = datetime.now(UTC)
 
-        self._sessions[state] = session
+        db.add(
+            AdminOAuthSession(
+                state=state,
+                redirect_uri=redirect_uri,
+                callback_url=callback_url,
+                created_at=now,
+                expires_at=now + _OAUTH_STATE_TTL,
+            )
+        )
+        await db.commit()
+
         auth_url = await self.oauth_provider.get_authorization_url(state, callback_url)
 
         logger.info(
             "oauth_flow_initiated",
             state=state[:8],
             callback_url=callback_url,
-            auth_url_preview=auth_url[:150],
         )
         return state, auth_url
 
@@ -65,19 +80,39 @@ class AdminAuthService:
         """
         Handle OAuth callback.
 
+        Looks up state in `admin_oauth_sessions`, deletes it (single-use),
+        and proceeds with the OAuth flow.
+
         Returns:
             dict with access_token, redirect_uri, user
         """
-        # Get session
-        session = self._sessions.get(state)
-        if not session:
+        now = datetime.now(UTC)
+
+        # Single-use state: fetch row, delete, validate not expired.
+        # Concurrent callbacks for the same state will see exactly one
+        # winner because the delete is atomic.
+        stmt = select(AdminOAuthSession).where(AdminOAuthSession.state == state)
+        result = await db.execute(stmt)
+        session_row = result.scalar_one_or_none()
+
+        if session_row is None:
             logger.warning("invalid_oauth_state", state=state[:8])
             raise ValueError("Invalid OAuth state")
 
+        # Capture the values we need before delete, then delete.
+        redirect_uri = session_row.redirect_uri
+        callback_url = session_row.callback_url
+        expires_at = session_row.expires_at
+
+        await db.execute(delete(AdminOAuthSession).where(AdminOAuthSession.state == state))
+        await db.commit()
+
+        if expires_at < now:
+            logger.warning("expired_oauth_state", state=state[:8])
+            raise ValueError("OAuth state expired; please try logging in again")
+
         # Exchange code for token
-        token: OAuthToken = await self.oauth_provider.exchange_code_for_token(
-            code, session.callback_url
-        )
+        token: OAuthToken = await self.oauth_provider.exchange_code_for_token(code, callback_url)
 
         # Get user info
         user: OAuthUser = await self.oauth_provider.get_user_info(token.access_token)
@@ -94,9 +129,6 @@ class AdminAuthService:
         # Generate JWT
         jwt_token = self._create_jwt_token(admin_user)
 
-        # Clean up session
-        del self._sessions[state]
-
         logger.info(
             "oauth_login_success",
             email=admin_user.email,
@@ -106,7 +138,7 @@ class AdminAuthService:
 
         return {
             "access_token": jwt_token,
-            "redirect_uri": session.redirect_uri,
+            "redirect_uri": redirect_uri,
             "user": {
                 "id": str(admin_user.id),
                 "email": admin_user.email,
@@ -115,6 +147,20 @@ class AdminAuthService:
                 "role": admin_user.role,
             },
         }
+
+    @staticmethod
+    async def cleanup_expired_oauth_sessions(db: AsyncSession) -> int:
+        """
+        Delete expired OAuth state rows.
+
+        Safe to call from a periodic job or opportunistically. Returns the
+        number of rows deleted. The expires_at index makes this cheap.
+        """
+        result = await db.execute(
+            delete(AdminOAuthSession).where(AdminOAuthSession.expires_at < datetime.now(UTC))
+        )
+        await db.commit()
+        return result.rowcount or 0
 
     async def _get_or_create_admin_user(self, db: AsyncSession, oauth_user: OAuthUser) -> AdminUser:
         """Get existing admin user or create if doesn't exist."""

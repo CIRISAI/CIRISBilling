@@ -903,3 +903,71 @@ class RevokedToken(Base):
             f"<RevokedToken(hash={self.token_hash[:16]}..., "
             f"user_id={self.user_id}, reason={self.reason})>"
         )
+
+
+class StripePaymentIntent(Base):
+    """
+    ORM model for stripe_payment_intents table.
+
+    Server-side authoritative record of every Stripe PaymentIntent created
+    by this service. Webhooks MUST resolve the credited account from this
+    table — never from the PaymentIntent metadata. The metadata round-trips
+    through Stripe and could be set by anyone with merchant access; this
+    row is the trust anchor that binds a PaymentIntent to the account that
+    initiated it.
+
+    See docs/THREAT_MODEL.md AV-3.
+    """
+
+    __tablename__ = "stripe_payment_intents"
+
+    # Stripe PaymentIntent ID (e.g., "pi_3O...")
+    payment_intent_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+
+    # Authoritative account binding — set at creation, never updated.
+    account_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(_FK_ACCOUNTS_ID, ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    oauth_provider: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Snapshot at creation time (for cross-checking the webhook event)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    uses_purchased: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Lifecycle
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="created")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    credited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_stripe_payment_intents_account_id", "account_id"),
+        Index("idx_stripe_payment_intents_status", "status"),
+    )
+
+
+class AdminOAuthSession(Base):
+    """
+    ORM model for admin OAuth flow state.
+
+    Persisted across workers so the /callback can land on a different worker
+    than /login. Rows are deleted on successful callback or expired-cleanup.
+    """
+
+    __tablename__ = "admin_oauth_sessions"
+
+    state: Mapped[str] = mapped_column(String(64), primary_key=True)
+    redirect_uri: Mapped[str] = mapped_column(String(2048), nullable=False)
+    callback_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("idx_admin_oauth_sessions_expires_at", "expires_at"),)

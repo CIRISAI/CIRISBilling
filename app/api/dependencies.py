@@ -262,10 +262,9 @@ async def get_user_from_google_token(
             detail="Server misconfiguration: no Google client IDs configured",
         )
 
-    logger.info(
+    logger.debug(
         "google_token_validation_starting",
         client_ids_count=len(valid_client_ids),
-        token_prefix=token[:30] + "..." if len(token) > 30 else token,
     )
 
     # Try each client ID until one works
@@ -483,14 +482,11 @@ async def get_user_from_apple_token(
 
     # Log available keys for debugging
     available_kids = list(_apple_public_keys.keys())
-    logger.info(
+    logger.debug(
         "apple_token_validation_starting",
         bundle_ids_count=len(valid_bundle_ids),
-        bundle_ids=valid_bundle_ids,
         kid=kid,
-        available_kids=available_kids,
         kid_found=kid in available_kids,
-        token_prefix=token[:30] + "..." if len(token) > 30 else token,
     )
 
     # Try each bundle ID until one works
@@ -684,18 +680,10 @@ async def get_user_from_oauth_token(
     try:
         unverified = jwt.decode(token, options={"verify_signature": False})
         issuer = unverified.get("iss", "")
-        logger.debug(
-            "oauth_token_issuer_detected",
-            issuer=issuer,
-            token_prefix=token[:20] + "..." if len(token) > 20 else token,
-        )
+        logger.debug("oauth_token_issuer_detected", issuer=issuer)
     except Exception as e:
         # If we can't decode, log and try both validators
-        logger.warning(
-            "oauth_token_decode_failed",
-            error=str(e),
-            token_prefix=token[:20] + "..." if len(token) > 20 else token,
-        )
+        logger.warning("oauth_token_decode_failed", error=str(e))
 
     # Route to appropriate validator based on issuer
     if issuer == "https://appleid.apple.com":

@@ -190,14 +190,19 @@ class APIKeyService:
         """
         # Validate format
         if not provided_key.startswith("cbk_"):
-            logger.warning("api_key_invalid_format", prefix=provided_key[:10])
+            logger.warning("api_key_invalid_format")
             raise AuthenticationError("Invalid API key format")
 
         # Extract prefix for lookup
         key_prefix = provided_key[:20]
 
-        # Look up by prefix
-        stmt = select(APIKey).where(APIKey.key_prefix == key_prefix, APIKey.status == "active")
+        # Look up by prefix — accept active and rotating keys.
+        # Rotating keys remain valid until their grace period expires
+        # (see rotate_api_key — grace_period_until is stored in key_metadata).
+        stmt = select(APIKey).where(
+            APIKey.key_prefix == key_prefix,
+            APIKey.status.in_(["active", "rotating"]),
+        )
         result = await self.db.execute(stmt)
         api_key = result.scalar_one_or_none()
 
@@ -211,6 +216,29 @@ class APIKeyService:
         except (VerifyMismatchError, InvalidHashError):
             logger.warning("api_key_hash_mismatch", key_id=str(api_key.id))
             raise AuthenticationError("Invalid API key")
+
+        # Enforce rotation grace period: revoke once expired.
+        if api_key.status == "rotating":
+            grace_until_str = (api_key.key_metadata or {}).get("grace_period_until")
+            grace_expired = True
+            if grace_until_str:
+                try:
+                    grace_until = datetime.fromisoformat(grace_until_str)
+                    grace_expired = datetime.now(UTC) > grace_until
+                except ValueError:
+                    logger.warning(
+                        "api_key_invalid_grace_period",
+                        key_id=str(api_key.id),
+                        grace_period_until=grace_until_str,
+                    )
+            if grace_expired:
+                api_key.status = "revoked"
+                await self.db.commit()
+                logger.info(
+                    "api_key_rotation_grace_expired",
+                    key_id=str(api_key.id),
+                )
+                raise AuthenticationError("API key rotation grace period expired")
 
         # Check expiration
         if api_key.expires_at and datetime.now(UTC) > api_key.expires_at:

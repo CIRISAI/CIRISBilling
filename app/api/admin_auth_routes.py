@@ -45,6 +45,7 @@ def get_admin_auth_service() -> AdminAuthService:
 async def google_login(
     request: Request,
     redirect_uri: str | None = None,
+    db: AsyncSession = Depends(get_write_db),
     auth_service: AdminAuthService = Depends(get_admin_auth_service),
 ) -> RedirectResponse:
     """
@@ -69,8 +70,18 @@ async def google_login(
     callback_url = f"{base_url}/admin/oauth/callback"
 
     try:
+        # Opportunistic cleanup of expired state rows. Cheap (indexed scan)
+        # and avoids the need for a separate cron.
+        try:
+            await auth_service.cleanup_expired_oauth_sessions(db)
+        except Exception as cleanup_err:
+            # Cleanup is best-effort; do not block login on a failed delete.
+            logger.warning("oauth_state_cleanup_failed", error=str(cleanup_err))
+
         state, auth_url = await auth_service.initiate_oauth_flow(
-            redirect_uri=redirect_uri, callback_url=callback_url
+            redirect_uri=redirect_uri,
+            callback_url=callback_url,
+            db=db,
         )
 
         logger.info(
@@ -79,7 +90,6 @@ async def google_login(
             redirect_uri=redirect_uri,
             callback_url=callback_url,
             request_scheme=request.url.scheme,
-            base_url=str(request.base_url),
         )
 
         return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
@@ -129,9 +139,10 @@ async def google_callback(
         assert isinstance(access_token, str)
         assert isinstance(redirect_uri, str)
 
-        # Set HttpOnly cookie for browser
+        # Redirect without exposing token in URL — cookie carries auth.
+        # SPA must call GET /admin/oauth/user to read user info from cookie.
         response_redirect = RedirectResponse(
-            url=f"{redirect_uri}?token={access_token}",
+            url=redirect_uri,
             status_code=status.HTTP_302_FOUND,
         )
 
@@ -148,7 +159,6 @@ async def google_callback(
         logger.info(
             "oauth_callback_cookie_set",
             redirect_uri=redirect_uri,
-            token_preview=access_token[:20] + "...",
             cookie_path="/",
             secure=True,
             samesite="lax",

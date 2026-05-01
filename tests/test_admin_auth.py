@@ -11,9 +11,41 @@ from uuid import uuid4
 import jwt
 import pytest
 
-from app.db.models import AdminUser
+from app.db.models import AdminOAuthSession, AdminUser
 from app.models.domain import OAuthToken, OAuthUser
 from app.services.admin_auth import AdminAuthService
+
+
+def _make_session_row(state: str, redirect_uri: str, callback_url: str, expires_at: datetime) -> AdminOAuthSession:
+    """Build an AdminOAuthSession row for tests."""
+    return AdminOAuthSession(
+        state=state,
+        redirect_uri=redirect_uri,
+        callback_url=callback_url,
+        created_at=datetime.now(UTC),
+        expires_at=expires_at,
+    )
+
+
+def _scalar_result(value):
+    """Build a mock result whose scalar_one_or_none returns `value`."""
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=value)
+    return result
+
+
+def _scalars_all_result(values):
+    """Build a mock result whose scalars().all() returns `values`."""
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = values
+    return result
+
+
+def _delete_result(rowcount: int = 1):
+    """Build a mock DELETE result."""
+    result = MagicMock()
+    result.rowcount = rowcount
+    return result
 
 
 class TestAdminAuthService:
@@ -38,22 +70,34 @@ class TestAdminAuthService:
         )
 
     @pytest.mark.asyncio
-    async def test_initiate_oauth_flow_creates_session(self, auth_service):
-        """initiate_oauth_flow creates session and returns auth URL."""
+    async def test_initiate_oauth_flow_persists_state(self, auth_service):
+        """initiate_oauth_flow persists state to db and returns auth URL."""
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.commit = AsyncMock()
+
         state, auth_url = await auth_service.initiate_oauth_flow(
             redirect_uri="https://example.com/admin",
             callback_url="https://example.com/admin/oauth/callback",
+            db=db,
         )
 
         assert len(state) > 0
         assert auth_url == "https://accounts.google.com/oauth?..."
-        assert state in auth_service._sessions
-        assert auth_service._sessions[state].redirect_uri == "https://example.com/admin"
+        # State row was added with correct fields and committed.
+        db.add.assert_called_once()
+        added = db.add.call_args[0][0]
+        assert isinstance(added, AdminOAuthSession)
+        assert added.state == state
+        assert added.redirect_uri == "https://example.com/admin"
+        assert added.expires_at > datetime.now(UTC)
+        db.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_handle_oauth_callback_invalid_state(self, auth_service):
         """handle_oauth_callback raises for invalid state."""
         db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(None))
 
         with pytest.raises(ValueError, match="Invalid OAuth state"):
             await auth_service.handle_oauth_callback(
@@ -63,35 +107,60 @@ class TestAdminAuthService:
             )
 
     @pytest.mark.asyncio
+    async def test_handle_oauth_callback_expired_state(self, auth_service):
+        """handle_oauth_callback raises if state is past its TTL."""
+        db = AsyncMock()
+        expired_row = _make_session_row(
+            state="expired_state",
+            redirect_uri="https://example.com/admin",
+            callback_url="https://example.com/cb",
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        db.execute = AsyncMock(
+            side_effect=[_scalar_result(expired_row), _delete_result(1)]
+        )
+        db.commit = AsyncMock()
+
+        with pytest.raises(ValueError, match="expired"):
+            await auth_service.handle_oauth_callback(
+                code="auth_code",
+                state="expired_state",
+                db=db,
+            )
+
+    @pytest.mark.asyncio
     async def test_handle_oauth_callback_success(self, auth_service, mock_oauth_provider):
         """handle_oauth_callback completes flow and returns JWT."""
         db = AsyncMock()
 
-        # Create a session first
-        state, _ = await auth_service.initiate_oauth_flow(
+        session_row = _make_session_row(
+            state="state123",
             redirect_uri="https://example.com/admin",
             callback_url="https://example.com/callback",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
         )
 
         # Mock token exchange
-        mock_token = OAuthToken(
-            access_token="google_access_token",
-            token_type="Bearer",
-            expires_in=3600,
-            refresh_token=None,
+        mock_oauth_provider.exchange_code_for_token = AsyncMock(
+            return_value=OAuthToken(
+                access_token="google_access_token",
+                token_type="Bearer",
+                expires_in=3600,
+                refresh_token=None,
+            )
         )
-        mock_oauth_provider.exchange_code_for_token = AsyncMock(return_value=mock_token)
 
         # Mock user info
-        mock_user = OAuthUser(
-            id="google_123",
-            email="admin@ciris.ai",
-            name="Admin User",
-            picture="https://example.com/pic.jpg",
+        mock_oauth_provider.get_user_info = AsyncMock(
+            return_value=OAuthUser(
+                id="google_123",
+                email="admin@ciris.ai",
+                name="Admin User",
+                picture="https://example.com/pic.jpg",
+            )
         )
-        mock_oauth_provider.get_user_info = AsyncMock(return_value=mock_user)
 
-        # Mock database
+        # Existing admin user
         mock_admin = MagicMock(spec=AdminUser)
         mock_admin.id = uuid4()
         mock_admin.email = "admin@ciris.ai"
@@ -100,38 +169,40 @@ class TestAdminAuthService:
         mock_admin.role = "admin"
         mock_admin.is_active = True
         mock_admin.last_login_at = None
+        mock_admin.google_id = None
 
-        result = MagicMock()
-        result.scalar_one_or_none.return_value = mock_admin
-        db.execute = AsyncMock(return_value=result)
+        # Sequence: SELECT session → DELETE session → SELECT admin user
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(session_row),
+                _delete_result(1),
+                _scalar_result(mock_admin),
+            ]
+        )
         db.commit = AsyncMock()
 
         response = await auth_service.handle_oauth_callback(
             code="auth_code",
-            state=state,
+            state="state123",
             db=db,
         )
 
         assert "access_token" in response
-        assert "redirect_uri" in response
-        assert "user" in response
+        assert response["redirect_uri"] == "https://example.com/admin"
         assert response["user"]["email"] == "admin@ciris.ai"
-
-        # Session should be cleaned up
-        assert state not in auth_service._sessions
 
     @pytest.mark.asyncio
     async def test_handle_oauth_callback_inactive_user(self, auth_service, mock_oauth_provider):
         """handle_oauth_callback raises for inactive user."""
         db = AsyncMock()
 
-        # Create session
-        state, _ = await auth_service.initiate_oauth_flow(
+        session_row = _make_session_row(
+            state="state456",
             redirect_uri="https://example.com/admin",
             callback_url="https://example.com/callback",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
         )
 
-        # Mock token and user
         mock_oauth_provider.exchange_code_for_token = AsyncMock(
             return_value=OAuthToken(
                 access_token="token",
@@ -149,17 +220,26 @@ class TestAdminAuthService:
             )
         )
 
-        # Mock inactive user
         mock_admin = MagicMock(spec=AdminUser)
         mock_admin.is_active = False
-        result = MagicMock()
-        result.scalar_one_or_none.return_value = mock_admin
-        db.execute = AsyncMock(return_value=result)
+        mock_admin.email = "inactive@ciris.ai"
+        mock_admin.full_name = "Inactive"
+        mock_admin.picture_url = None
+        mock_admin.google_id = None
+
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(session_row),
+                _delete_result(1),
+                _scalar_result(mock_admin),
+            ]
+        )
+        db.commit = AsyncMock()
 
         with pytest.raises(ValueError, match="deactivated"):
             await auth_service.handle_oauth_callback(
                 code="auth_code",
-                state=state,
+                state="state456",
                 db=db,
             )
 
@@ -168,13 +248,13 @@ class TestAdminAuthService:
         """handle_oauth_callback creates new user if not exists."""
         db = AsyncMock()
 
-        # Create session
-        state, _ = await auth_service.initiate_oauth_flow(
+        session_row = _make_session_row(
+            state="state789",
             redirect_uri="https://example.com/admin",
             callback_url="https://example.com/callback",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
         )
 
-        # Mock token and user
         mock_oauth_provider.exchange_code_for_token = AsyncMock(
             return_value=OAuthToken(
                 access_token="token",
@@ -192,19 +272,18 @@ class TestAdminAuthService:
             )
         )
 
-        # First query returns None (user not found)
-        # Second query returns empty list (count = 0)
-        first_result = MagicMock()
-        first_result.scalar_one_or_none.return_value = None
-
-        second_result = MagicMock()
-        second_result.scalars.return_value.all.return_value = []
-
-        db.execute = AsyncMock(side_effect=[first_result, second_result])
+        # SELECT session → DELETE session → SELECT admin (none) → SELECT all admins (count = 0)
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(session_row),
+                _delete_result(1),
+                _scalar_result(None),
+                _scalars_all_result([]),
+            ]
+        )
         db.add = MagicMock()
         db.commit = AsyncMock()
 
-        # Mock refresh to set ID
         async def mock_refresh(obj):
             if not hasattr(obj, "id") or obj.id is None:
                 obj.id = uuid4()
@@ -213,13 +292,23 @@ class TestAdminAuthService:
 
         response = await auth_service.handle_oauth_callback(
             code="auth_code",
-            state=state,
+            state="state789",
             db=db,
         )
 
-        # Should create new user
         db.add.assert_called_once()
         assert "access_token" in response
+
+    @pytest.mark.asyncio
+    async def test_cleanup_expired_oauth_sessions_returns_count(self, auth_service):
+        """cleanup_expired_oauth_sessions deletes expired rows and returns count."""
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_delete_result(3))
+        db.commit = AsyncMock()
+
+        deleted = await auth_service.cleanup_expired_oauth_sessions(db)
+        assert deleted == 3
+        db.commit.assert_awaited_once()
 
     def test_create_jwt_token(self, auth_service):
         """_create_jwt_token creates valid JWT."""
@@ -334,6 +423,7 @@ class TestAdminAuthRoutes:
         mock_auth_service.initiate_oauth_flow = AsyncMock(
             return_value=("state123", "https://accounts.google.com/oauth?...")
         )
+        mock_auth_service.cleanup_expired_oauth_sessions = AsyncMock(return_value=0)
 
         request = MagicMock()
         request.headers = {}
@@ -344,6 +434,7 @@ class TestAdminAuthRoutes:
         response = await google_login(
             request=request,
             redirect_uri=None,
+            db=AsyncMock(),
             auth_service=mock_auth_service,
         )
 
@@ -358,6 +449,7 @@ class TestAdminAuthRoutes:
         mock_auth_service.initiate_oauth_flow = AsyncMock(
             return_value=("state123", "https://accounts.google.com/oauth?...")
         )
+        mock_auth_service.cleanup_expired_oauth_sessions = AsyncMock(return_value=0)
 
         request = MagicMock()
         request.headers = {"Host": "example.com", "X-Forwarded-Proto": "https"}
@@ -368,6 +460,7 @@ class TestAdminAuthRoutes:
         await google_login(
             request=request,
             redirect_uri="https://custom.com/callback",
+            db=AsyncMock(),
             auth_service=mock_auth_service,
         )
 
@@ -384,6 +477,7 @@ class TestAdminAuthRoutes:
         from app.api.admin_auth_routes import google_login
 
         mock_auth_service.initiate_oauth_flow = AsyncMock(side_effect=Exception("OAuth error"))
+        mock_auth_service.cleanup_expired_oauth_sessions = AsyncMock(return_value=0)
 
         request = MagicMock()
         request.headers = {}
@@ -395,6 +489,7 @@ class TestAdminAuthRoutes:
             await google_login(
                 request=request,
                 redirect_uri=None,
+                db=AsyncMock(),
                 auth_service=mock_auth_service,
             )
 
@@ -428,8 +523,9 @@ class TestAdminAuthRoutes:
         )
 
         assert result.status_code == 302
-        # Should have token in URL
-        assert "token=" in result.headers["location"]
+        # Token must NOT leak into the URL — cookie carries auth.
+        assert "token=" not in result.headers["location"]
+        assert result.headers["location"] == "https://example.com/admin"
 
     @pytest.mark.asyncio
     async def test_google_callback_invalid_state(self, mock_auth_service):

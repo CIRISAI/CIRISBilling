@@ -8,12 +8,16 @@ https://developer.apple.com/documentation/appstoreserverapi
 """
 
 import base64
+import binascii
 import time
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import jwt
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from structlog import get_logger
 
 from app.exceptions import PaymentProviderError, WebhookVerificationError
@@ -26,10 +30,98 @@ from app.models.apple_storekit import (
 
 logger = get_logger(__name__)
 
-# Cache for Apple's root certificates (for JWS verification)
-_apple_root_certs: dict[str, object] = {}
-_apple_certs_fetched_at: float = 0
-_APPLE_CERTS_CACHE_TTL = 3600  # Refresh every hour
+# SHA-256 fingerprint of Apple Root CA - G3, the trust anchor for App Store
+# Server signing. Pinning by fingerprint is self-contained and removes the
+# need to ship the cert file with the deployment.
+# Source: https://www.apple.com/certificateauthority/
+APPLE_ROOT_CA_G3_SHA256 = bytes.fromhex(
+    "63343abfb89a6a03ebb57e9b3f5fa7be7c4f5c756f3017b3a8c488c3653e9179"
+)
+
+
+def _verify_apple_jws(signed_data: str) -> dict[str, Any]:
+    """
+    Verify a JWS signed by Apple, returning the decoded payload.
+
+    Steps:
+      1. Parse the JWS protected header; require ES256 and an x5c chain.
+      2. Load the x5c chain (DER, base64-encoded), build leaf → root.
+      3. Verify each cert is within its validity period and is signed by
+         its issuer in the chain.
+      4. Pin the root: the topmost cert MUST match Apple Root CA - G3 by
+         SHA-256 fingerprint.
+      5. Verify the JWS signature against the leaf cert's public key.
+
+    Raises WebhookVerificationError on any failure. The exception messages
+    are intentionally non-leaky.
+    """
+    # We must read the header before verifying — that's how we get the x5c
+    # chain that contains the verification key. The signature IS verified
+    # below via jwt.decode with the leaf cert's public key + algorithms=["ES256"].
+    # NOSONAR-START: python:S5659 (header peek for key extraction; full sig verified below)
+    try:
+        unverified_header = jwt.get_unverified_header(signed_data)  # NOSONAR python:S5659
+    except jwt.exceptions.DecodeError as exc:
+        raise WebhookVerificationError("Malformed JWS header") from exc
+    header = unverified_header
+    # NOSONAR-END: python:S5659
+
+    alg = header.get("alg")
+    if alg != "ES256":
+        raise WebhookVerificationError(f"Unexpected JWS algorithm: {alg}")
+
+    x5c_b64 = header.get("x5c")
+    if not isinstance(x5c_b64, list) or not x5c_b64:
+        raise WebhookVerificationError("JWS header missing x5c chain")
+
+    # Decode each cert. x5c entries are standard base64 (NOT URL-safe), per RFC 7515 §4.1.6.
+    try:
+        chain = [x509.load_der_x509_certificate(base64.b64decode(entry)) for entry in x5c_b64]
+    except (ValueError, TypeError, binascii.Error) as exc:
+        raise WebhookVerificationError("Could not parse x5c chain") from exc
+
+    # Validity periods. We use UTC-aware variants (deprecated naive ones removed in 46+).
+    now = datetime.now(UTC)
+    for cert in chain:
+        not_before = cert.not_valid_before_utc
+        not_after = cert.not_valid_after_utc
+        if now < not_before or now > not_after:
+            raise WebhookVerificationError("Certificate outside validity period")
+
+    # Pin the root: the topmost cert must match Apple Root CA - G3.
+    root = chain[-1]
+    root_fingerprint = root.fingerprint(hashes.SHA256())
+    if root_fingerprint != APPLE_ROOT_CA_G3_SHA256:
+        raise WebhookVerificationError("JWS chain not rooted at Apple Root CA - G3")
+
+    # Verify each cert in the chain is signed by the next.
+    for i in range(len(chain) - 1):
+        try:
+            chain[i].verify_directly_issued_by(chain[i + 1])
+        except (ValueError, TypeError, x509.InvalidVersion) as exc:
+            raise WebhookVerificationError(f"Chain link {i} not signed by issuer") from exc
+        except Exception as exc:  # cryptography raises various subclasses
+            raise WebhookVerificationError(f"Chain link {i} verification failed") from exc
+
+    # Verify the JWS signature using the leaf cert's public key.
+    leaf = chain[0]
+    leaf_pem = leaf.public_key().public_bytes(
+        encoding=Encoding.PEM,
+        format=PublicFormat.SubjectPublicKeyInfo,
+    )
+    try:
+        payload: dict[str, Any] = jwt.decode(
+            signed_data,
+            leaf_pem,
+            algorithms=["ES256"],
+            options={"verify_aud": False, "verify_iss": False, "verify_exp": False},
+        )
+    except jwt.exceptions.InvalidSignatureError as exc:
+        raise WebhookVerificationError("JWS signature does not verify") from exc
+    except jwt.exceptions.InvalidTokenError as exc:
+        raise WebhookVerificationError("JWS payload invalid") from exc
+
+    return payload
 
 
 class AppleStoreKitProvider:
@@ -143,20 +235,16 @@ class AppleStoreKitProvider:
         """
         Decode and verify JWS signed data from Apple.
 
-        Note: Full verification requires Apple's root certificate chain.
-        For now, we decode without full chain verification since we're
-        receiving data directly from Apple's API over HTTPS.
+        Always validates the x5c certificate chain against Apple Root CA - G3
+        and verifies the JWS signature with the leaf cert's public key. Used
+        for both inbound webhooks AND outbound App Store Server API responses
+        — neither path trusts Apple-signed bytes without cryptographic proof.
+        See docs/THREAT_MODEL.md AV-4.
         """
         try:
-            # Decode without verification for data extraction
-            # (the HTTPS connection to Apple provides integrity)
-            payload: dict[str, Any] = jwt.decode(
-                signed_data,
-                options={"verify_signature": False},
-            )
-            return payload
-        except jwt.exceptions.DecodeError as e:
-            raise PaymentProviderError(f"Invalid JWS data: {e}")
+            return _verify_apple_jws(signed_data)
+        except WebhookVerificationError as e:
+            raise PaymentProviderError(f"JWS verification failed: {e}") from e
 
     def _parse_transaction_info(self, data: dict[str, Any]) -> AppleTransactionInfo:
         """Parse transaction info from decoded JWS payload."""
@@ -297,12 +385,11 @@ class AppleStoreKitProvider:
             logger.exception("apple_transaction_history_failed")
             raise PaymentProviderError(f"History lookup failed: {exc}") from exc
 
-    async def verify_webhook(
-        self,
-        payload: bytes,
-    ) -> AppleStoreKitWebhookEvent:
+    async def verify_webhook(self, payload: bytes) -> AppleStoreKitWebhookEvent:
         """
         Verify and parse App Store Server Notification V2.
+
+        Every nested JWS is verified against Apple Root CA - G3.
 
         Args:
             payload: Raw webhook payload (JWS signed)
@@ -324,21 +411,32 @@ class AppleStoreKitProvider:
             if not signed_payload:
                 raise WebhookVerificationError("No signedPayload in webhook")
 
-            # Decode the notification (contains nested JWS for transaction/renewal)
-            notification = self._decode_jws(signed_payload)
+            # Decode the notification (contains nested JWS for transaction/renewal).
+            # All three nested JWS payloads are signed by the same Apple chain;
+            # verifying each independently catches mid-payload tampering.
+            try:
+                notification = self._decode_jws(signed_payload)
+            except PaymentProviderError as exc:
+                raise WebhookVerificationError(str(exc)) from exc
 
             # Parse transaction info if present
             transaction_info: AppleTransactionInfo | None = None
             signed_transaction = notification.get("data", {}).get("signedTransactionInfo")
             if signed_transaction:
-                tx_data = self._decode_jws(signed_transaction)
+                try:
+                    tx_data = self._decode_jws(signed_transaction)
+                except PaymentProviderError as exc:
+                    raise WebhookVerificationError(str(exc)) from exc
                 transaction_info = self._parse_transaction_info(tx_data)
 
             # Parse renewal info if present
             renewal_info: AppleRenewalInfo | None = None
             signed_renewal = notification.get("data", {}).get("signedRenewalInfo")
             if signed_renewal:
-                renewal_data = self._decode_jws(signed_renewal)
+                try:
+                    renewal_data = self._decode_jws(signed_renewal)
+                except PaymentProviderError as exc:
+                    raise WebhookVerificationError(str(exc)) from exc
                 renewal_info = AppleRenewalInfo(
                     original_transaction_id=renewal_data.get("originalTransactionId", ""),
                     product_id=renewal_data.get("productId", ""),

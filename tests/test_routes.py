@@ -257,7 +257,9 @@ class TestCreateChargeRoute:
                 )
             )
 
-            result = await create_charge(request, db_session, api_key)
+            result = await create_charge(
+                request, db_session, CombinedAuth(auth_type="api_key", api_key=api_key)
+            )
 
             assert result.charge_id == charge_id
             assert result.amount_minor == 100
@@ -309,7 +311,9 @@ class TestCreateChargeRoute:
             )
 
             with pytest.raises(HTTPException) as exc_info:
-                await create_charge(request, db_session, api_key)
+                await create_charge(
+                request, db_session, CombinedAuth(auth_type="api_key", api_key=api_key)
+            )
 
             assert exc_info.value.status_code == 404
 
@@ -351,7 +355,9 @@ class TestCreateChargeRoute:
             )
 
             with pytest.raises(HTTPException) as exc_info:
-                await create_charge(request, db_session, api_key)
+                await create_charge(
+                request, db_session, CombinedAuth(auth_type="api_key", api_key=api_key)
+            )
 
             assert exc_info.value.status_code == 402
             assert "50" in exc_info.value.detail
@@ -395,7 +401,9 @@ class TestCreateChargeRoute:
             )
 
             with pytest.raises(HTTPException) as exc_info:
-                await create_charge(request, db_session, api_key)
+                await create_charge(
+                request, db_session, CombinedAuth(auth_type="api_key", api_key=api_key)
+            )
 
             assert exc_info.value.status_code == 403
             assert "suspended" in exc_info.value.detail
@@ -436,7 +444,9 @@ class TestCreateChargeRoute:
             service.create_charge = AsyncMock(side_effect=AccountClosedError(uuid4()))
 
             with pytest.raises(HTTPException) as exc_info:
-                await create_charge(request, db_session, api_key)
+                await create_charge(
+                request, db_session, CombinedAuth(auth_type="api_key", api_key=api_key)
+            )
 
             assert exc_info.value.status_code == 403
             assert "closed" in exc_info.value.detail
@@ -479,7 +489,9 @@ class TestCreateChargeRoute:
             service.create_charge = AsyncMock(side_effect=IdempotencyConflictError(existing_id))
 
             with pytest.raises(HTTPException) as exc_info:
-                await create_charge(request, db_session, api_key)
+                await create_charge(
+                request, db_session, CombinedAuth(auth_type="api_key", api_key=api_key)
+            )
 
             assert exc_info.value.status_code == 409
             assert exc_info.value.headers["X-Existing-Charge-ID"] == str(existing_id)
@@ -522,7 +534,9 @@ class TestCreateChargeRoute:
             )
 
             with pytest.raises(HTTPException) as exc_info:
-                await create_charge(request, db_session, api_key)
+                await create_charge(
+                request, db_session, CombinedAuth(auth_type="api_key", api_key=api_key)
+            )
 
             assert exc_info.value.status_code == 500
 
@@ -1217,60 +1231,360 @@ class TestIntegrityRoutes:
 # ============================================================================
 
 
+class TestGooglePubSubOIDC:
+    """Tests for AV-5: Google Pub/Sub webhook must verify OIDC token."""
+
+    def _request(self, headers: dict) -> MagicMock:
+        from fastapi import Request
+
+        request = MagicMock(spec=Request)
+        request.headers = headers
+        request.body = AsyncMock(return_value=b"{}")
+        return request
+
+    @pytest.mark.asyncio
+    async def test_missing_authorization_header_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={})
+        with patch("app.config.settings") as mock_settings:
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "Missing OIDC token" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_invalid_oidc_token_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer bad.token.here"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token", side_effect=ValueError("bad sig")
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = "https://billing.example/webhook"
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "Invalid OIDC token" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_wrong_issuer_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer good.token"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={
+                "iss": "https://malicious.example",
+                "email_verified": True,
+                "email": "x@example.com",
+            },
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = ""
+            mock_settings.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL = ""
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "issuer" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_email_unverified_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer good.token"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={
+                "iss": "https://accounts.google.com",
+                "email_verified": False,
+                "email": "x@example.com",
+            },
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = ""
+            mock_settings.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL = ""
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 401
+            assert "email not verified" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_oidc_disabled_skips_validation(self):
+        """When GOOGLE_PUBSUB_VERIFY_OIDC=False, the webhook accepts unsigned requests.
+
+        This is the deployment-edge-delegation path. We log a loud warning so
+        misconfiguration is visible.
+        """
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={})
+        db = AsyncMock()
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "app.services.provider_config.ProviderConfigService"
+        ) as mock_config_cls:
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = False
+            mock_config_cls.return_value.get_google_play_config = AsyncMock(
+                return_value=None
+            )
+
+            result = await google_play_webhook(request=request, db=db)
+
+            # No exception; webhook accepted (and ignored due to no provider config).
+            assert result["status"] == "ignored"
+
+    @pytest.mark.asyncio
+    async def test_wrong_publisher_email_rejected(self):
+        from fastapi import HTTPException
+
+        from app.api.routes import google_play_webhook
+
+        request = self._request(headers={"Authorization": "Bearer good.token"})
+
+        with patch("app.config.settings") as mock_settings, patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={
+                "iss": "https://accounts.google.com",
+                "email_verified": True,
+                "email": "imposter@evil.iam.gserviceaccount.com",
+            },
+        ):
+            mock_settings.GOOGLE_PUBSUB_VERIFY_OIDC = True
+            mock_settings.GOOGLE_PUBSUB_AUDIENCE = ""
+            mock_settings.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL = (
+                "expected@trusted.iam.gserviceaccount.com"
+            )
+            with pytest.raises(HTTPException) as exc_info:
+                await google_play_webhook(request=request, db=AsyncMock())
+            assert exc_info.value.status_code == 403
+            assert "unauthorized publisher" in exc_info.value.detail
+
+
+class TestStripeWebhookBinding:
+    """Tests for the AV-3 fix: webhooks must resolve account from server-side row."""
+
+    def _make_event(self, payment_id: str, amount: int = 500, currency: str = "USD"):
+        """Build a fake parsed Stripe webhook event."""
+        from app.services.payment_provider import WebhookEvent
+
+        return WebhookEvent(
+            event_id="evt_test_1",
+            event_type="payment_intent.succeeded",
+            payment_id=payment_id,
+            status="succeeded",
+            amount_minor=amount,
+            currency=currency,
+            metadata_account_id="ATTACKER-CONTROLLED",
+            metadata_oauth_provider="oauth:google",
+            metadata_external_id="attacker-external-id",
+        )
+
+    def _make_binding(
+        self,
+        payment_id: str,
+        account_id=None,
+        amount: int = 500,
+        currency: str = "USD",
+        status_str: str = "created",
+        uses_purchased: int = 20,
+    ):
+        """Build a fake StripePaymentIntent row."""
+        from app.db.models import StripePaymentIntent
+
+        binding = MagicMock(spec=StripePaymentIntent)
+        binding.payment_intent_id = payment_id
+        binding.account_id = account_id or uuid4()
+        binding.oauth_provider = "oauth:google"
+        binding.external_id = "honest-user-id"
+        binding.amount_minor = amount
+        binding.currency = currency
+        binding.uses_purchased = uses_purchased
+        binding.status = status_str
+        binding.credited_at = None
+        return binding
+
+    @pytest.mark.asyncio
+    async def test_webhook_unknown_payment_intent_fails_closed(self):
+        """Webhooks for PaymentIntents we didn't create must NOT credit any account."""
+        from fastapi import HTTPException, Request
+
+        from app.api.routes import stripe_webhook
+
+        webhook_event = self._make_event("pi_unknown")
+
+        # No binding row exists for this payment_id.
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: None))
+
+        request = MagicMock(spec=Request)
+        request.body = AsyncMock(return_value=b'{"signed": "payload"}')
+        request.headers = {"stripe-signature": "sig"}
+
+        with patch(
+            "app.services.provider_config.ProviderConfigService"
+        ) as mock_config_cls, patch(
+            "app.services.stripe_provider.StripeProvider"
+        ) as mock_provider_cls:
+            mock_config_cls.return_value.get_stripe_config = AsyncMock(
+                return_value={
+                    "api_key": "sk_test",
+                    "webhook_secret": "whsec_test",
+                    "publishable_key": "pk_test",
+                }
+            )
+            mock_provider = mock_provider_cls.return_value
+            mock_provider.verify_webhook = AsyncMock(return_value=webhook_event)
+
+            with pytest.raises(HTTPException) as exc_info:
+                await stripe_webhook(request=request, db=db)
+
+            assert exc_info.value.status_code == 400
+            assert "Unknown PaymentIntent" in exc_info.value.detail
+            # confirm_payment must NOT be called — we never reach that code path.
+            mock_provider.confirm_payment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_webhook_amount_mismatch_fails_closed(self):
+        """Webhook amount must match the bound amount or be rejected."""
+        from fastapi import HTTPException, Request
+
+        from app.api.routes import stripe_webhook
+
+        webhook_event = self._make_event("pi_match", amount=99999)
+        binding = self._make_binding("pi_match", amount=500)
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: binding))
+
+        request = MagicMock(spec=Request)
+        request.body = AsyncMock(return_value=b"{}")
+        request.headers = {"stripe-signature": "sig"}
+
+        with patch(
+            "app.services.provider_config.ProviderConfigService"
+        ) as mock_config_cls, patch(
+            "app.services.stripe_provider.StripeProvider"
+        ) as mock_provider_cls:
+            mock_config_cls.return_value.get_stripe_config = AsyncMock(
+                return_value={
+                    "api_key": "sk_test",
+                    "webhook_secret": "whsec_test",
+                    "publishable_key": "pk_test",
+                }
+            )
+            mock_provider = mock_provider_cls.return_value
+            mock_provider.verify_webhook = AsyncMock(return_value=webhook_event)
+
+            with pytest.raises(HTTPException) as exc_info:
+                await stripe_webhook(request=request, db=db)
+
+            assert exc_info.value.status_code == 400
+            assert "amount mismatch" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_webhook_happy_path_credits_bound_account(self):
+        """A first-time webhook for a known PaymentIntent credits the bound account."""
+        from fastapi import Request
+
+        from app.api.routes import stripe_webhook
+
+        webhook_event = self._make_event("pi_first")
+        binding = self._make_binding("pi_first", status_str="created")
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=lambda: binding)
+        )
+        db.commit = AsyncMock()
+
+        request = MagicMock(spec=Request)
+        request.body = AsyncMock(return_value=b"{}")
+        request.headers = {"stripe-signature": "sig"}
+
+        with patch(
+            "app.services.provider_config.ProviderConfigService"
+        ) as mock_config_cls, patch(
+            "app.services.stripe_provider.StripeProvider"
+        ) as mock_provider_cls, patch(
+            "app.api.routes.BillingService"
+        ) as mock_billing_cls:
+            mock_config_cls.return_value.get_stripe_config = AsyncMock(
+                return_value={
+                    "api_key": "sk_test",
+                    "webhook_secret": "whsec_test",
+                    "publishable_key": "pk_test",
+                }
+            )
+            mock_provider = mock_provider_cls.return_value
+            mock_provider.verify_webhook = AsyncMock(return_value=webhook_event)
+            mock_provider.confirm_payment = AsyncMock(return_value=True)
+
+            mock_billing = mock_billing_cls.return_value
+            mock_billing.add_purchased_uses = AsyncMock()
+
+            result = await stripe_webhook(request=request, db=db)
+
+            assert result["status"] == "success"
+            mock_billing.add_purchased_uses.assert_awaited_once()
+            # Account identity must come from binding, not metadata.
+            kwargs = mock_billing.add_purchased_uses.call_args.kwargs
+            assert kwargs["identity"].external_id == "honest-user-id"
+            assert kwargs["identity"].external_id != "attacker-external-id"
+            # Binding flipped to "credited"
+            assert binding.status == "credited"
+            assert binding.credited_at is not None
+
+    @pytest.mark.asyncio
+    async def test_webhook_already_credited_returns_idempotent(self):
+        """Webhook redelivery for an already-credited PaymentIntent does not re-credit."""
+        from fastapi import Request
+
+        from app.api.routes import stripe_webhook
+
+        webhook_event = self._make_event("pi_credited")
+        binding = self._make_binding("pi_credited", status_str="credited")
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: binding))
+
+        request = MagicMock(spec=Request)
+        request.body = AsyncMock(return_value=b"{}")
+        request.headers = {"stripe-signature": "sig"}
+
+        with patch(
+            "app.services.provider_config.ProviderConfigService"
+        ) as mock_config_cls, patch(
+            "app.services.stripe_provider.StripeProvider"
+        ) as mock_provider_cls:
+            mock_config_cls.return_value.get_stripe_config = AsyncMock(
+                return_value={
+                    "api_key": "sk_test",
+                    "webhook_secret": "whsec_test",
+                    "publishable_key": "pk_test",
+                }
+            )
+            mock_provider = mock_provider_cls.return_value
+            mock_provider.verify_webhook = AsyncMock(return_value=webhook_event)
+
+            result = await stripe_webhook(request=request, db=db)
+
+            assert result["status"] == "already_credited"
+            mock_provider.confirm_payment.assert_not_called()
+
+
 class TestLiteLLMUsageRoutes:
     """Tests for LiteLLM usage endpoints."""
-
-    @pytest.mark.asyncio
-    async def test_usage_debug_success(self):
-        """Debug endpoint returns parsed body."""
-        from fastapi import Request
-
-        from app.api.routes import litellm_log_usage_debug
-
-        api_key = APIKeyData(
-            key_id=uuid4(),
-            name="Test Key",
-            key_prefix="cbk_test",
-            environment="test",
-            permissions=["billing:write"],
-            status="active",
-            created_at=datetime.now(UTC),
-            expires_at=None,
-            last_used_at=None,
-        )
-
-        # Create a mock request with body
-        mock_request = MagicMock(spec=Request)
-        mock_request.body = AsyncMock(return_value=b'{"test": "data"}')
-
-        result = await litellm_log_usage_debug(mock_request, api_key)
-
-        assert "received" in result
-        assert result["received"]["test"] == "data"
-
-    @pytest.mark.asyncio
-    async def test_usage_debug_invalid_json(self):
-        """Debug endpoint handles invalid JSON."""
-        from fastapi import Request
-
-        from app.api.routes import litellm_log_usage_debug
-
-        api_key = APIKeyData(
-            key_id=uuid4(),
-            name="Test Key",
-            key_prefix="cbk_test",
-            environment="test",
-            permissions=["billing:write"],
-            status="active",
-            created_at=datetime.now(UTC),
-            expires_at=None,
-            last_used_at=None,
-        )
-
-        mock_request = MagicMock(spec=Request)
-        mock_request.body = AsyncMock(return_value=b"not json")
-
-        result = await litellm_log_usage_debug(mock_request, api_key)
-
-        assert "error" in result
-        assert "raw_body" in result
