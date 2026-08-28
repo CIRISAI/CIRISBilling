@@ -670,10 +670,31 @@ class LiteLLMUsageLogRequest(BaseModel):
     total_prompt_tokens: int = Field(..., ge=0, description="Total prompt tokens across all calls")
     total_completion_tokens: int = Field(..., ge=0, description="Total completion tokens")
     models_used: list[str] = Field(default_factory=list, description="List of models used")
+    # Optional so a proxy predating migration 0021 keeps working unchanged.
+    providers_used: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Upstream provider(s) that served the calls (e.g. OpenRouter sub-providers "
+            "such as Venice/DeepInfra). models_used alone cannot attribute slowness "
+            "because one model id maps to many providers."
+        ),
+    )
     actual_cost_cents: float = Field(
         ..., ge=0, description="Actual cost to providers in cents (can be fractional)"
     )
-    duration_ms: int = Field(..., ge=0, description="Total interaction duration in milliseconds")
+    duration_ms: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Interaction wall-clock: start -> finalization (stale timeout or call-limit "
+            "trip). Includes agent-side and idle time; NOT pure LLM latency."
+        ),
+    )
+    llm_duration_ms: int | None = Field(
+        default=None,
+        ge=0,
+        description="Summed wall-clock of the LLM calls only. Compare against duration_ms.",
+    )
 
     # Error tracking
     error_count: int = Field(default=0, ge=0, description="Number of failed LLM calls")

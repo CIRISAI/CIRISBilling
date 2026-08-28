@@ -708,8 +708,18 @@ class LLMUsageLog(Base):
     total_prompt_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     total_completion_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     models_used: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    # Upstream provider(s) that actually served the calls. On OpenRouter one
+    # model id maps to ~10 providers with a 7.7x throughput spread, so
+    # models_used alone cannot attribute slowness. See migration 0021.
+    providers_used: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
     actual_cost_cents: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
+    # Interaction wall-clock: START -> finalization (stale timeout / call-limit
+    # trip), so it includes agent-side and idle time between calls.
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Summed wall-clock of the LLM calls ONLY. Compare against duration_ms to
+    # separate "the model was slow" from "the interaction sat open". Nullable:
+    # rows written by a proxy predating migration 0021 have no value.
+    llm_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Error tracking
     error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
