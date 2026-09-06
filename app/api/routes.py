@@ -1767,8 +1767,10 @@ async def litellm_log_usage(
         total_prompt_tokens=request.total_prompt_tokens,
         total_completion_tokens=request.total_completion_tokens,
         models_used=request.models_used,
+        providers_used=request.providers_used,
         actual_cost_cents=request.actual_cost_cents,
         duration_ms=request.duration_ms,
+        llm_duration_ms=request.llm_duration_ms,
         error_count=request.error_count,
         fallback_count=request.fallback_count,
     )
